@@ -141,10 +141,12 @@ iptv_multicast_integration_lab/
 │   └── TEST_PLAN.md          # Test plan & compliance matrix
 └── scripts/
     ├── lib/
-    │   └── common.sh         # Core framework library (logging, docker, direct WAN, safety)
+    │   ├── common.sh         # Core framework library (logging, docker, direct WAN, safety)
+    │   └── udhcpc.script     # BusyBox udhcpc event script for container LAN DHCP
+    ├── client_dhcp.sh        # LAN DHCP client manager for STB containers (request | daemon | status | release)
     ├── start_wan_server.sh   # Standalone WAN IPTV server (Zero Topology, host-direct)
     ├── start_server.sh       # Streamer manager (--direct host mode or --container mode)
-    ├── setup.sh              # Topology setup (--physical, --virtual, --wan-only, --server-only)
+    ├── setup.sh              # Topology setup (--physical, --virtual, --wan-only, --server-only, --dhcp, --static)
     ├── cleanup.sh            # Idempotent cleanup of containers, veths, bridges, direct daemons
     ├── show_state.sh         # Displays runtime state, bridges, containers, groups, DHCP leases
     ├── capture.sh            # Packet capture manager (start | stop | status)
@@ -240,9 +242,15 @@ Deploys both `br-test-wan` and `br-test-lan` and starts streaming, but skips cli
 
 #### Mode 4: Full Physical DUT Mode (Automated End-to-End)
 ```bash
-sudo ./scripts/setup.sh --physical
+# Dynamic DHCP Mode: Clients obtain IP from DUT LAN DHCP server (Default if CLIENT_IP_MODE=dhcp)
+sudo ./scripts/setup.sh --physical --dhcp
+
+# Static Mode: Clients use static IPs from config.env (10.20.0.11/24, 10.20.0.12/24)
+sudo ./scripts/setup.sh --physical --static
 ```
-Deploys both bridges and launches internal STB client containers (`mcast-client1`, `mcast-client2`).
+Deploys both bridges, starts media server streaming, and launches internal STB client containers (`mcast-client1`, `mcast-client2`). When running in DHCP mode, clients automatically send DHCP Discover requests with:
+* **Option 12 (Host Name)**: `stb-living-room` and `stb-bedroom`
+* **Option 60 (Vendor Class Identifier)**: `IPTV_STB`
 
 #### Mode 5: Virtual Simulation Mode (No Hardware Required)
 ```bash
@@ -256,7 +264,27 @@ Verify state anytime with:
 
 ---
 
-### Step 4: Testing with External Windows Client (VLC / FFplay)
+### Step 4: LAN Client DHCP Management (`client_dhcp.sh`)
+
+You can inspect, request, or renew DHCP leases for container STB clients at any time:
+
+```bash
+# Check current lease status, IP, gateway, and MAC for all clients:
+./scripts/client_dhcp.sh status all
+
+# Request a one-shot DHCP lease for client 1 or all clients:
+sudo ./scripts/client_dhcp.sh request all
+
+# Start background udhcpc daemons to continuously maintain/renew leases:
+sudo ./scripts/client_dhcp.sh daemon all
+
+# Release lease and flush IP:
+sudo ./scripts/client_dhcp.sh release all
+```
+
+---
+
+### Step 5: Testing with External Windows Client (VLC / FFplay)
 
 When testing IPTV playback on a separate Windows PC connected to the router's LAN port:
 
@@ -308,7 +336,7 @@ When testing IPTV playback on a separate Windows PC connected to the router's LA
 
 ---
 
-### Step 5: Testing with Ubuntu Desktop GUI Player
+### Step 6: Testing with Ubuntu Desktop GUI Player
 
 To watch the live multicast video directly on the Ubuntu desktop:
 
@@ -323,7 +351,7 @@ To watch the live multicast video directly on the Ubuntu desktop:
 
 ---
 
-### Step 6: Automated End-to-End Smoke Scenario
+### Step 7: Automated End-to-End Smoke Scenario
 
 To run the complete automated qualification test (Join, stream validation, multi-client replication, Leave):
 
@@ -356,7 +384,7 @@ OVERALL RESULT: PASS (Real video streaming and IGMP signaling verified)
 
 ---
 
-### Step 7: Cleanup & Interface Restoration
+### Step 8: Cleanup & Interface Restoration
 
 To stop all streams, daemons, containers, and **automatically restore all physical interfaces (`WAN_IF`, `LAN_IF`) to UP state with DHCP**:
 

@@ -265,7 +265,9 @@ attach_container_to_bridge() {
     nsenter -t "${pid}" -n ip link set lo up
     nsenter -t "${pid}" -n ip link set "${peer_veth}" name eth0
     nsenter -t "${pid}" -n ip addr flush dev eth0 2>/dev/null || true
-    nsenter -t "${pid}" -n ip addr add "${cidr}" dev eth0
+    if [[ -n "${cidr}" ]]; then
+        nsenter -t "${pid}" -n ip addr add "${cidr}" dev eth0
+    fi
     nsenter -t "${pid}" -n ip link set eth0 up
     if [[ -n "${gateway}" ]]; then
         nsenter -t "${pid}" -n ip route replace default via "${gateway}" dev eth0

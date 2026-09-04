@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# REAL IPTV MULTICAST LAB - DEDICATED UDHCPC EVENT SCRIPT
+# Configures IP address and default route inside client network namespaces safely
+# without modifying host /etc/resolv.conf.
+# ==============================================================================
+
+set -Eeuo pipefail
+
+case "${1:-}" in
+    bound|renew)
+        if [[ -n "${ip:-}" ]]; then
+            prefix="24"
+            if [[ -n "${subnet:-}" ]]; then
+                bits=0
+                IFS=.
+                for octet in ${subnet}; do
+                    case "${octet}" in
+                        255) (( bits += 8 )) ;;
+                        254) (( bits += 7 )) ;;
+                        252) (( bits += 6 )) ;;
+                        248) (( bits += 5 )) ;;
+                        240) (( bits += 4 )) ;;
+                        224) (( bits += 3 )) ;;
+                        192) (( bits += 2 )) ;;
+                        128) (( bits += 1 )) ;;
+                        0)   ;;
+                        *)   ;;
+                    esac
+                done
+                unset IFS
+                if (( bits > 0 && bits <= 32 )); then
+                    prefix="${bits}"
+                fi
+            fi
+
+            ip -4 addr flush dev "${interface}" 2>/dev/null || true
+            ip -4 addr add "${ip}/${prefix}" ${broadcast:+broadcast "${broadcast}"} dev "${interface}" 2>/dev/null || true
+        fi
+
+        if [[ -n "${router:-}" ]]; then
+            for r in ${router}; do
+                ip -4 route replace default via "${r}" dev "${interface}" 2>/dev/null || true
+                break
+            done
+        fi
+        ;;
+
+    deconfig)
+        ip link set dev "${interface}" up 2>/dev/null || true
+        ip -4 addr flush dev "${interface}" 2>/dev/null || true
+        ip -4 route flush dev "${interface}" 2>/dev/null || true
+        ;;
+
+    leasefail|nak)
+        ;;
+
+    *)
+        ;;
+esac
+
+exit 0

@@ -51,12 +51,16 @@ main() {
     sleep 1
 
     # Phase 3: Client 1 joins the stream
-    log_info "Phase 3: Starting VLC in ${CLIENT1_NAME} (sends IGMPv2 Join)..."
+    local c1_ip
+    c1_ip="$(docker exec "${CLIENT1_NAME}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
+    log_info "Phase 3: Starting VLC in ${CLIENT1_NAME} (IP: ${c1_ip}) (sends IGMPv2 Join)..."
     "${SCRIPT_DIR}/start_client.sh" 1 start
     sleep 4
 
     # Phase 4: Client 2 joins the stream (Multi-client verification)
-    log_info "Phase 4: Starting VLC in ${CLIENT2_NAME} (Multi-client join)..."
+    local c2_ip
+    c2_ip="$(docker exec "${CLIENT2_NAME}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
+    log_info "Phase 4: Starting VLC in ${CLIENT2_NAME} (IP: ${c2_ip}) (Multi-client join)..."
     "${SCRIPT_DIR}/start_client.sh" 2 start
     sleep 3
 

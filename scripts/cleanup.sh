@@ -65,6 +65,13 @@ main() {
     stop_pidfile "${STATE_DIR}/client_1.pid"
     stop_pidfile "${STATE_DIR}/client_2.pid"
 
+    # Stop client DHCP daemons
+    if [[ -x "${SCRIPT_DIR}/client_dhcp.sh" ]]; then
+        "${SCRIPT_DIR}/client_dhcp.sh" release all 2>/dev/null || true
+    fi
+    stop_pidfile "${STATE_DIR}/udhcpc-${CLIENT1_NAME}.pid"
+    stop_pidfile "${STATE_DIR}/udhcpc-${CLIENT2_NAME}.pid"
+
     # Container WAN DHCP server
     wan_dhcp_server stop 2>/dev/null || true
 

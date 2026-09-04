@@ -29,12 +29,20 @@ show_container_details() {
     pid="$(container_pid "${name}")"
     printf '  Container PID: %s\n' "${pid}"
 
-    local ip_addr gw host
+    local ip_addr gw host mac ip_mode
     ip_addr="$(docker exec "${name}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
     gw="$(docker exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
     host="$(docker exec "${name}" hostname 2>/dev/null || echo '<default>')"
+    mac="$(docker exec "${name}" cat /sys/class/net/eth0/address 2>/dev/null || echo '<unknown>')"
+
+    ip_mode="Static"
+    if is_pidfile_running "${STATE_DIR}/udhcpc-${name}.pid"; then
+        ip_mode="DHCP Leased (udhcpc PID $(cat "${STATE_DIR}/udhcpc-${name}.pid"))"
+    fi
+
     printf '  Hostname:      %s\n' "${host}"
-    printf '  IP Address:    %s\n' "${ip_addr:-<no-ip>}"
+    printf '  MAC Address:   %s\n' "${mac}"
+    printf '  IP Address:    %s (%s)\n' "${ip_addr:-<no-ip>}" "${ip_mode}"
     printf '  Default Route: via %s\n' "${gw:-<none>}"
     printf '  Multicast Groups Joined:\n'
     while IFS= read -r g; do
@@ -116,6 +124,11 @@ main() {
 
     printf '\n'
     wan_dhcp_server status || true
+
+    if [[ "${wan_only}" == "0" && "${server_only}" == "0" ]]; then
+        printf '\n'
+        "${SCRIPT_DIR}/client_dhcp.sh" status all || true
+    fi
 
     printf '\n'
     "${SCRIPT_DIR}/capture.sh" status || true

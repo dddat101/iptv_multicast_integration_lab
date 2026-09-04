@@ -35,6 +35,8 @@ Options:
   -v, --virtual, --no-dut Run in Virtual Simulation mode (self-contained, no physical DUT required)
   -w, --wan-only          Deploy WAN side only (WAN bridge, WAN DHCP & Server; skips LAN_IF and clients)
   -s, --server-only       Deploy Media Server only (skip STB client containers)
+  --dhcp, --client-dhcp   Have STB clients obtain dynamic IP from DUT LAN DHCP [Default if CLIENT_IP_MODE=dhcp]
+  --static, --client-static Force STB clients to use static IP configuration
   --no-stream             Do not auto-start streaming immediately after setup
   -h, --help              Show this help message
 
@@ -62,18 +64,21 @@ main() {
     require_cmd nsenter
 
     SERVER_ONLY="${SERVER_ONLY:-0}"
+    CLIENT_IP_MODE="${CLIENT_IP_MODE:-dhcp}"
     local wan_only=0
     local auto_stream=1
 
     while (( $# > 0 )); do
         case "$1" in
-            --virtual|-v|--no-dut) IS_VIRTUAL=1; shift ;;
-            --physical|-p)         IS_VIRTUAL=0; shift ;;
-            --wan-only|-w)         wan_only=1; SERVER_ONLY=1; shift ;;
-            --server-only|-s)      SERVER_ONLY=1; shift ;;
-            --no-stream)           auto_stream=0; shift ;;
-            -h|--help)             usage; exit 0 ;;
-            *)                     shift ;;
+            --virtual|-v|--no-dut)     IS_VIRTUAL=1; shift ;;
+            --physical|-p)             IS_VIRTUAL=0; shift ;;
+            --wan-only|-w)             wan_only=1; SERVER_ONLY=1; shift ;;
+            --server-only|-s)          SERVER_ONLY=1; shift ;;
+            --dhcp|--client-dhcp)      CLIENT_IP_MODE="dhcp"; shift ;;
+            --static|--client-static)  CLIENT_IP_MODE="static"; shift ;;
+            --no-stream)               auto_stream=0; shift ;;
+            -h|--help)                 usage; exit 0 ;;
+            *)                         shift ;;
         esac
     done
 
@@ -145,15 +150,35 @@ main() {
     attach_container_to_bridge "${SERVER_NAME}" "${WAN_BRIDGE}" veth-mserv vpeer-mserv "${SERVER_IP}" "${SERVER_GW}" "mcast-server"
 
     if (( SERVER_ONLY == 0 && wan_only == 0 )); then
-        log_info "Starting client 1 container: ${CLIENT1_NAME} (${CLIENT1_IP}, Hostname: '${CLIENT1_HOSTNAME}')..."
+        local c1_ip="${CLIENT1_IP}"
+        local c1_gw="${CLIENT1_GW}"
+        local c2_ip="${CLIENT2_IP}"
+        local c2_gw="${CLIENT2_GW}"
+
+        if [[ "${CLIENT_IP_MODE}" == "dhcp" ]]; then
+            c1_ip=""
+            c1_gw=""
+            c2_ip=""
+            c2_gw=""
+            log_info "Client addressing mode: Dynamic DHCP from DUT LAN (Vendor: '${CLIENT_DHCP_VENDOR:-<none>}')"
+        else
+            log_info "Client addressing mode: Static (${CLIENT1_IP}, ${CLIENT2_IP})"
+        fi
+
+        log_info "Starting client 1 container: ${CLIENT1_NAME} (Hostname: '${CLIENT1_HOSTNAME}')..."
         start_idle_container "${CLIENT1_NAME}"
-        attach_container_to_bridge "${CLIENT1_NAME}" "${LAN_BRIDGE}" veth-mc1 vpeer-mc1 "${CLIENT1_IP}" "${CLIENT1_GW}" "${CLIENT1_HOSTNAME}"
+        attach_container_to_bridge "${CLIENT1_NAME}" "${LAN_BRIDGE}" veth-mc1 vpeer-mc1 "${c1_ip}" "${c1_gw}" "${CLIENT1_HOSTNAME}"
         force_container_igmp_version "${CLIENT1_NAME}" "${FORCE_IGMP_VERSION}"
 
-        log_info "Starting client 2 container: ${CLIENT2_NAME} (${CLIENT2_IP}, Hostname: '${CLIENT2_HOSTNAME}')..."
+        log_info "Starting client 2 container: ${CLIENT2_NAME} (Hostname: '${CLIENT2_HOSTNAME}')..."
         start_idle_container "${CLIENT2_NAME}"
-        attach_container_to_bridge "${CLIENT2_NAME}" "${LAN_BRIDGE}" veth-mc2 vpeer-mc2 "${CLIENT2_IP}" "${CLIENT2_GW}" "${CLIENT2_HOSTNAME}"
+        attach_container_to_bridge "${CLIENT2_NAME}" "${LAN_BRIDGE}" veth-mc2 vpeer-mc2 "${c2_ip}" "${c2_gw}" "${CLIENT2_HOSTNAME}"
         force_container_igmp_version "${CLIENT2_NAME}" "${FORCE_IGMP_VERSION}"
+
+        if [[ "${CLIENT_IP_MODE}" == "dhcp" ]]; then
+            log_info "Requesting DHCP leases for clients from DUT LAN via udhcpc..."
+            "${SCRIPT_DIR}/client_dhcp.sh" daemon all || log_warn "DHCP lease request to DUT LAN timed out; clients will continue in background."
+        fi
     else
         log_info "STB client containers skipped (server_only=${SERVER_ONLY}, wan_only=${wan_only})."
     fi
@@ -171,6 +196,7 @@ main() {
 IS_VIRTUAL='${IS_VIRTUAL}'
 SERVER_ONLY='${SERVER_ONLY}'
 WAN_ONLY='${wan_only}'
+CLIENT_IP_MODE='${CLIENT_IP_MODE}'
 WAN_BRIDGE='${WAN_BRIDGE}'
 LAN_BRIDGE='${LAN_BRIDGE}'
 WAN_IF='${WAN_IF}'
