@@ -34,7 +34,7 @@ Options:
   -p, --physical          Run in Physical DUT mode (requires dedicated USB adapters) [Default]
   -v, --virtual, --no-dut Run in Virtual Simulation mode (self-contained, no physical DUT required)
   -w, --wan-only          Deploy WAN side only (WAN bridge, WAN DHCP & Server; skips LAN_IF and clients)
-  -s, --server-only       Deploy Media Server only (skip STB client containers)
+  -s, --server-only       Deploy Media Server only (skip STB client namespaces)
   --dhcp, --client-dhcp   Have STB clients obtain dynamic IP from DUT LAN DHCP [Default if CLIENT_IP_MODE=dhcp]
   --static, --client-static Force STB clients to use static IP configuration
   --no-stream             Do not auto-start streaming immediately after setup
@@ -57,11 +57,10 @@ main() {
 
     require_root
     load_config
-    check_docker
 
     require_cmd ip
-    require_cmd docker
-    require_cmd nsenter
+    require_cmd ffmpeg
+    require_cmd python3
 
     SERVER_ONLY="${SERVER_ONLY:-0}"
     CLIENT_IP_MODE="${CLIENT_IP_MODE:-dhcp}"
@@ -81,12 +80,6 @@ main() {
             *)                         shift ;;
         esac
     done
-
-    # Pre-flight check: Media Image
-    if ! docker image inspect "${MEDIA_IMAGE}" >/dev/null 2>&1; then
-        log_warn "Docker image '${MEDIA_IMAGE}' not found. Building it automatically..."
-        "${SCRIPT_DIR}/build_image.sh"
-    fi
 
     # Pre-flight check: Media sample asset
     if [[ ! -f "${MEDIA_DIR}/${MEDIA_FILE}" ]]; then
@@ -145,9 +138,8 @@ main() {
         wan_dhcp_server start
     fi
 
-    log_info "Starting media server container: ${SERVER_NAME} (${SERVER_IP})..."
-    start_idle_container "${SERVER_NAME}"
-    attach_container_to_bridge "${SERVER_NAME}" "${WAN_BRIDGE}" veth-mserv vpeer-mserv "${SERVER_IP}" "${SERVER_GW}" "mcast-server"
+    log_info "Creating media server namespace: ${SERVER_NAME} (${SERVER_IP})..."
+    attach_netns_to_bridge "${SERVER_NAME}" "${WAN_BRIDGE}" veth-mserv vpeer-mserv "${SERVER_IP}" "${SERVER_GW}" "mcast-server"
 
     if (( SERVER_ONLY == 0 && wan_only == 0 )); then
         local c1_ip="${CLIENT1_IP}"
@@ -165,22 +157,20 @@ main() {
             log_info "Client addressing mode: Static (${CLIENT1_IP}, ${CLIENT2_IP})"
         fi
 
-        log_info "Starting client 1 container: ${CLIENT1_NAME} (Hostname: '${CLIENT1_HOSTNAME}')..."
-        start_idle_container "${CLIENT1_NAME}"
-        attach_container_to_bridge "${CLIENT1_NAME}" "${LAN_BRIDGE}" veth-mc1 vpeer-mc1 "${c1_ip}" "${c1_gw}" "${CLIENT1_HOSTNAME}"
-        force_container_igmp_version "${CLIENT1_NAME}" "${FORCE_IGMP_VERSION}"
+        log_info "Creating client 1 namespace: ${CLIENT1_NAME} (Hostname: '${CLIENT1_HOSTNAME}')..."
+        attach_netns_to_bridge "${CLIENT1_NAME}" "${LAN_BRIDGE}" veth-mc1 vpeer-mc1 "${c1_ip}" "${c1_gw}" "${CLIENT1_HOSTNAME}"
+        force_netns_igmp_version "${CLIENT1_NAME}" "${FORCE_IGMP_VERSION}"
 
-        log_info "Starting client 2 container: ${CLIENT2_NAME} (Hostname: '${CLIENT2_HOSTNAME}')..."
-        start_idle_container "${CLIENT2_NAME}"
-        attach_container_to_bridge "${CLIENT2_NAME}" "${LAN_BRIDGE}" veth-mc2 vpeer-mc2 "${c2_ip}" "${c2_gw}" "${CLIENT2_HOSTNAME}"
-        force_container_igmp_version "${CLIENT2_NAME}" "${FORCE_IGMP_VERSION}"
+        log_info "Creating client 2 namespace: ${CLIENT2_NAME} (Hostname: '${CLIENT2_HOSTNAME}')..."
+        attach_netns_to_bridge "${CLIENT2_NAME}" "${LAN_BRIDGE}" veth-mc2 vpeer-mc2 "${c2_ip}" "${c2_gw}" "${CLIENT2_HOSTNAME}"
+        force_netns_igmp_version "${CLIENT2_NAME}" "${FORCE_IGMP_VERSION}"
 
         if [[ "${CLIENT_IP_MODE}" == "dhcp" ]]; then
             log_info "Requesting DHCP leases for clients from DUT LAN via udhcpc..."
             "${SCRIPT_DIR}/client_dhcp.sh" daemon all || log_warn "DHCP lease request to DUT LAN timed out; clients will continue in background."
         fi
     else
-        log_info "STB client containers skipped (server_only=${SERVER_ONLY}, wan_only=${wan_only})."
+        log_info "STB client namespaces skipped (server_only=${SERVER_ONLY}, wan_only=${wan_only})."
     fi
 
     if (( IS_VIRTUAL == 1 && wan_only == 0 )); then
@@ -189,7 +179,7 @@ main() {
 
     if (( auto_stream == 1 )); then
         log_info "Auto-starting media server streaming on ${SERVER_NAME}..."
-        "${SCRIPT_DIR}/start_server.sh" --container start
+        "${SCRIPT_DIR}/start_server.sh" --netns start
     fi
 
     cat >"${STATE_DIR}/topology_state.env" <<EOF

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # REAL IPTV MULTICAST TEST LAB - DIAGNOSTICS
-# Non-destructive pre-flight check of host adapters, docker, media, and tools
+# Non-destructive pre-flight check of host adapters, media, and tools
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -43,34 +43,19 @@ main() {
         fi
     done
 
-    printf '\n== Docker & Media Environment ==\n'
-    if command -v docker >/dev/null 2>&1; then
-        if docker info >/dev/null 2>&1; then
-            printf '  Docker Daemon: RUNNING\n'
-            if docker image inspect "${MEDIA_IMAGE}" >/dev/null 2>&1; then
-                printf '  Media Image:   OK (%s)\n' "${MEDIA_IMAGE}"
-            else
-                printf '  Media Image:   MISSING (Run ./scripts/build_image.sh)\n'
-            fi
-        else
-            printf '  Docker Daemon: ERROR (Daemon not running or user lacks permission)\n'
-        fi
-    else
-        printf '  Docker:        NOT INSTALLED\n'
-    fi
-
+    printf '\n== Media Environment ==\n'
     if [[ -f "${MEDIA_DIR}/${MEDIA_FILE}" ]]; then
         printf '  Media Asset:   OK (%s, %s bytes)\n' "${MEDIA_FILE}" "$(stat -c %s "${MEDIA_DIR}/${MEDIA_FILE}" 2>/dev/null || echo '?')"
     else
         printf '  Media Asset:   MISSING (Run ./scripts/generate_media.sh)\n'
     fi
 
-    printf '\n== Relevant Tools Availability ==\n'
-    for cmd in ip bridge docker ffmpeg nsenter tcpdump tshark dnsmasq ethtool lsusb; do
+    printf '\n== Required Host Tools Availability ==\n'
+    for cmd in ip bridge ffmpeg cvlc udhcpc dnsmasq tcpdump tshark python3 ethtool lsusb; do
         if command -v "${cmd}" >/dev/null 2>&1; then
             printf '  %-12s -> OK (%s)\n' "${cmd}" "$(command -v "${cmd}")"
         else
-            printf '  %-12s -> MISSING\n' "${cmd}"
+            printf '  %-12s -> MISSING (Install via sudo ./scripts/install_deps.sh)\n' "${cmd}"
         fi
     done
 

@@ -4,8 +4,8 @@
 # Streams MPEG-TS video over UDP Multicast.
 # Supports two operating modes:
 #   1. Direct Host Mode (--direct): Streams directly out physical WAN_IF with
-#      optional direct WAN DHCP server (no Docker bridges/containers needed).
-#   2. Container Mode (--container): Streams from inside SERVER_NAME container
+#      optional direct WAN DHCP server (no topology needed).
+#   2. Namespace Mode (--netns): Streams from inside SERVER_NAME network namespace
 #      attached to WAN test bridge.
 # ==============================================================================
 
@@ -31,13 +31,14 @@ Usage:
 Commands:
   run             Run streaming interactively in the foreground [Default if TTY]
   start           Run streaming in background daemon mode
-  stop            Stop streaming daemon (direct or container)
+  stop            Stop streaming daemon (direct or namespace)
   status          Show status of media streaming daemon
 
 Options:
   -d, --direct, --standalone
-                  Run directly on physical WAN_IF (no topology / Docker bridges needed)
-  -c, --container Force running inside Docker container topology
+                  Run directly on physical WAN_IF (no topology needed)
+  -n, --netns, -c, --container
+                  Run inside network namespace topology
   -h, --help      Show this help message
 
 Examples:
@@ -46,9 +47,9 @@ Examples:
   sudo ./scripts/start_server.sh --direct start
   sudo ./scripts/start_server.sh stop
 
-  # Container Topology Mode:
-  ./scripts/start_server.sh start
-  ./scripts/start_server.sh stop
+  # Namespace Topology Mode:
+  sudo ./scripts/start_server.sh start
+  sudo ./scripts/start_server.sh stop
 USAGE
 }
 
@@ -61,66 +62,66 @@ check_media_asset() {
 }
 
 # ------------------------------------------------------------------------------
-# Container Topology Mode Functions
+# Network Namespace Topology Mode Functions
 # ------------------------------------------------------------------------------
 run_foreground() {
-    check_docker
+    require_cmd ffmpeg
     check_media_asset
-    container_exists "${SERVER_NAME}" || die "Container '${SERVER_NAME}' is not running. Run ./scripts/setup.sh first, or use --direct to stream on host."
+    netns_exists "${SERVER_NAME}" || die "Namespace '${SERVER_NAME}' is not running. Run sudo ./scripts/setup.sh first, or use --direct to stream on host."
 
-    log_info "Streaming ${MCAST_GROUP}:${MCAST_PORT} from ${SERVER_NAME} (Foreground)..."
-    docker exec "${SERVER_NAME}" ffmpeg -hide_banner -re -stream_loop -1 \
-        -i "/media/${MEDIA_FILE}" -c copy -f mpegts \
+    log_info "Streaming ${MCAST_GROUP}:${MCAST_PORT} from namespace ${SERVER_NAME} (Foreground)..."
+    ip netns exec "${SERVER_NAME}" ffmpeg -hide_banner -re -stream_loop -1 \
+        -i "${MEDIA_DIR}/${MEDIA_FILE}" -c copy -f mpegts \
         "udp://${MCAST_GROUP}:${MCAST_PORT}?pkt_size=${MPEGTS_PKT_SIZE}&ttl=${MCAST_TTL}"
 }
 
 start_background() {
-    check_docker
+    require_cmd ffmpeg
     check_media_asset
-    container_exists "${SERVER_NAME}" || die "Container '${SERVER_NAME}' is not running. Run ./scripts/setup.sh first, or use --direct to stream on host."
+    netns_exists "${SERVER_NAME}" || die "Namespace '${SERVER_NAME}' is not running. Run sudo ./scripts/setup.sh first, or use --direct to stream on host."
 
     if is_pidfile_running "${PID_FILE}"; then
-        log_warn "Container media server already streaming (PID $(cat "${PID_FILE}"))."
+        log_warn "Namespace media server already streaming (PID $(cat "${PID_FILE}"))."
         return 0
     fi
 
     log_info "Starting background media stream ${MCAST_GROUP}:${MCAST_PORT} from ${SERVER_NAME}..."
-    nohup docker exec "${SERVER_NAME}" ffmpeg -hide_banner -re -stream_loop -1 \
-        -i "/media/${MEDIA_FILE}" -c copy -f mpegts \
+    nohup ip netns exec "${SERVER_NAME}" ffmpeg -hide_banner -re -stream_loop -1 \
+        -i "${MEDIA_DIR}/${MEDIA_FILE}" -c copy -f mpegts \
         "udp://${MCAST_GROUP}:${MCAST_PORT}?pkt_size=${MPEGTS_PKT_SIZE}&ttl=${MCAST_TTL}" \
         >"${LOG_FILE}" 2>&1 &
 
     local pid=$!
     printf '%s\n' "${pid}" > "${PID_FILE}"
-    printf 'container\n' > "${STATE_MODE_FILE}"
+    printf 'netns\n' > "${STATE_MODE_FILE}"
     sleep 0.5
 
     if ! kill -0 "${pid}" 2>/dev/null; then
-        log_error "Failed to start media server streaming in container."
+        log_error "Failed to start media server streaming in namespace."
         cat "${LOG_FILE}" >&2 || true
         rm -f "${PID_FILE}"
         return 1
     fi
 
-    log_info "Container media server streaming started [PID ${pid}]. Logs: ${LOG_FILE}"
+    log_info "Media server streaming started in ${SERVER_NAME} [PID ${pid}]. Logs: ${LOG_FILE}"
 }
 
 stop_background() {
     if is_pidfile_running "${PID_FILE}"; then
         local pid
         pid="$(cat "${PID_FILE}")"
-        log_info "Stopping container media server streaming [PID ${pid}]..."
+        log_info "Stopping media server streaming [PID ${pid}]..."
         stop_pidfile "${PID_FILE}"
     else
         rm -f "${PID_FILE}" 2>/dev/null || true
     fi
 
-    if container_exists "${SERVER_NAME}"; then
-        docker exec "${SERVER_NAME}" pkill -TERM -f ffmpeg 2>/dev/null || true
+    if netns_exists "${SERVER_NAME}"; then
+        ip netns exec "${SERVER_NAME}" pkill -TERM -f ffmpeg 2>/dev/null || true
         sleep 0.2
-        docker exec "${SERVER_NAME}" pkill -KILL -f ffmpeg 2>/dev/null || true
+        ip netns exec "${SERVER_NAME}" pkill -KILL -f ffmpeg 2>/dev/null || true
     fi
-    log_info "Container media server streaming stopped."
+    log_info "Media server streaming stopped."
 }
 
 # ------------------------------------------------------------------------------
@@ -144,11 +145,7 @@ run_direct_foreground() {
             -i "${MEDIA_DIR}/${MEDIA_FILE}" -c copy -f mpegts \
             "udp://${MCAST_GROUP}:${MCAST_PORT}?pkt_size=${MPEGTS_PKT_SIZE}&ttl=${MCAST_TTL}&localaddr=${local_ip}"
     else
-        check_docker
-        docker run -it --rm --net=host -v "${MEDIA_DIR}:/media:ro" "${MEDIA_IMAGE}" \
-            ffmpeg -hide_banner -re -stream_loop -1 \
-            -i "/media/${MEDIA_FILE}" -c copy -f mpegts \
-            "udp://${MCAST_GROUP}:${MCAST_PORT}?pkt_size=${MPEGTS_PKT_SIZE}&ttl=${MCAST_TTL}&localaddr=${local_ip}"
+        die "ffmpeg is required. Please run: sudo ./scripts/install_deps.sh"
     fi
 }
 
@@ -178,13 +175,7 @@ start_direct_background() {
             >"${DIRECT_LOG_FILE}" 2>&1 &
         pid=$!
     else
-        check_docker
-        nohup docker run --rm --net=host -v "${MEDIA_DIR}:/media:ro" "${MEDIA_IMAGE}" \
-            ffmpeg -hide_banner -re -stream_loop -1 \
-            -i "/media/${MEDIA_FILE}" -c copy -f mpegts \
-            "udp://${MCAST_GROUP}:${MCAST_PORT}?pkt_size=${MPEGTS_PKT_SIZE}&ttl=${MCAST_TTL}&localaddr=${local_ip}" \
-            >"${DIRECT_LOG_FILE}" 2>&1 &
-        pid=$!
+        die "ffmpeg is required. Please run: sudo ./scripts/install_deps.sh"
     fi
 
     printf '%s\n' "${pid}" > "${DIRECT_PID_FILE}"
@@ -230,7 +221,7 @@ stop_any() {
         stop_direct_background
         stopped=1
     fi
-    if is_pidfile_running "${PID_FILE}" || container_exists "${SERVER_NAME}"; then
+    if is_pidfile_running "${PID_FILE}" || netns_exists "${SERVER_NAME}"; then
         stop_background
         stopped=1
     fi
@@ -257,7 +248,7 @@ show_status() {
 
     if is_pidfile_running "${PID_FILE}"; then
         running=1
-        printf 'Mode:    CONTAINER (%s)\n' "${SERVER_NAME}"
+        printf 'Mode:    NAMESPACE (%s)\n' "${SERVER_NAME}"
         printf 'Status:  STREAMING (PID %s)\n' "$(cat "${PID_FILE}")"
         printf 'Stream:  udp://%s:%s (pkt_size=%s, ttl=%s)\n' \
             "${MCAST_GROUP}" "${MCAST_PORT}" "${MPEGTS_PKT_SIZE}" "${MCAST_TTL}"
@@ -276,11 +267,11 @@ main() {
 
     while (( $# > 0 )); do
         case "$1" in
-            -d|--direct|--standalone) mode="direct"; shift ;;
-            -c|--container)          mode="container"; shift ;;
-            run|start|stop|status)   cmd="$1"; shift ;;
-            -h|--help)               usage; exit 0 ;;
-            *)                       usage; exit 2 ;;
+            -d|--direct|--standalone)    mode="direct"; shift ;;
+            -n|--netns|-c|--container)   mode="netns"; shift ;;
+            run|start|stop|status)      cmd="$1"; shift ;;
+            -h|--help)                  usage; exit 0 ;;
+            *)                          usage; exit 2 ;;
         esac
     done
 
@@ -295,7 +286,7 @@ main() {
     if [[ "${cmd}" == "stop" ]]; then
         if [[ "${mode}" == "direct" ]]; then
             stop_direct_background
-        elif [[ "${mode}" == "container" ]]; then
+        elif [[ "${mode}" == "netns" ]]; then
             stop_background
         else
             stop_any
@@ -311,18 +302,18 @@ main() {
     if [[ "${mode}" == "auto" ]]; then
         if is_pidfile_running "${DIRECT_PID_FILE}"; then
             mode="direct"
-        elif container_exists "${SERVER_NAME}"; then
-            mode="container"
+        elif netns_exists "${SERVER_NAME}"; then
+            mode="netns"
         else
             if (( EUID == 0 )); then
-                log_info "No container '${SERVER_NAME}' detected. Defaulting to direct WAN host mode on ${WAN_IF}."
+                log_info "No namespace '${SERVER_NAME}' detected. Defaulting to direct WAN host mode on ${WAN_IF}."
                 mode="direct"
             else
-                die "Container '${SERVER_NAME}' is not running.
-To stream directly on physical interface '${WAN_IF}' without containers or topology:
+                die "Namespace '${SERVER_NAME}' is not running.
+To stream directly on physical interface '${WAN_IF}' without namespaces or topology:
   sudo ./scripts/start_server.sh --direct ${cmd}
   (or: sudo ./scripts/start_wan_server.sh ${cmd})
-To run with container topology:
+To run with namespace topology:
   sudo ./scripts/setup.sh --wan-only (Deploy WAN side only)
   sudo ./scripts/setup.sh            (Deploy full lab topology)"
             fi
@@ -332,8 +323,8 @@ To run with container topology:
     case "${mode}:${cmd}" in
         direct:run)      run_direct_foreground ;;
         direct:start)    start_direct_background ;;
-        container:run)   run_foreground ;;
-        container:start) start_background ;;
+        netns:run)       run_foreground ;;
+        netns:start)     start_background ;;
         *)               usage; exit 2 ;;
     esac
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # REAL IPTV MULTICAST TEST LAB - LAN DHCP CLIENT MANAGER
-# Manages DHCP client requests inside STB client containers to obtain IPs from DUT LAN.
+# Manages DHCP client requests inside STB client namespaces to obtain IPs from DUT LAN.
 # Supports DHCP Option 12 (Hostname) and Option 60 (Vendor Class Identifier).
 # ==============================================================================
 
@@ -25,10 +25,10 @@ Actions:
   status   [client|all]             Show assigned IP, hostname, MAC, and lease status
 
 Targets:
-  all           Both client containers (Default)
+  all           Both client namespaces (Default)
   1 | client1   First client (CLIENT1_NAME)
   2 | client2   Second client (CLIENT2_NAME)
-  <name>        Explicit container name
+  <name>        Explicit namespace name
 
 Examples:
   sudo ./scripts/client_dhcp.sh request all
@@ -60,18 +60,14 @@ request_lease() {
 
     require_root
     require_cmd udhcpc
-    container_exists "${name}" || die "Container '${name}' is not running. Run ./scripts/setup.sh first."
-
-    local pid
-    pid="$(container_pid "${name}")"
-    [[ -n "${pid}" && "${pid}" -gt 0 ]] || die "Could not get PID for container '${name}'"
+    netns_exists "${name}" || die "Namespace '${name}' is not running. Run sudo ./scripts/setup.sh first."
 
     stop_pidfile "${pidfile}"
 
     local -a extra_opts=()
     if [[ -n "${hostname}" ]]; then
         extra_opts+=(-x "hostname:${hostname}" -F "${hostname}")
-        docker exec "${name}" hostname "${hostname}" 2>/dev/null || true
+        printf '%s\n' "${hostname}" > "${STATE_DIR}/hostname-${name}.txt"
     fi
     if [[ -n "${CLIENT_DHCP_VENDOR:-}" ]]; then
         extra_opts+=(-V "${CLIENT_DHCP_VENDOR}")
@@ -79,7 +75,7 @@ request_lease() {
 
     log_info "Requesting DHCP lease for ${name} (Host: '${hostname}', Vendor: '${CLIENT_DHCP_VENDOR:-<none>}') on eth0..."
 
-    if nsenter -t "${pid}" -n udhcpc \
+    if ip netns exec "${name}" udhcpc \
         -i eth0 \
         -n -q \
         -t 5 -T 2 \
@@ -88,8 +84,8 @@ request_lease() {
         "${extra_opts[@]}" \
         >"${logfile}" 2>&1; then
         local ip_addr gw
-        ip_addr="$(docker exec "${name}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
-        gw="$(docker exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
+        ip_addr="$(ip -n "${name}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+        gw="$(ip netns exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
         log_info "SUCCESS: ${name} (${hostname}) leased IP ${ip_addr:-<unknown>} from DUT LAN (Gateway: ${gw:-<none>})"
     else
         log_warn "Failed to obtain DHCP lease for ${name} (${hostname}). Ensure DUT LAN DHCP server is active."
@@ -106,18 +102,14 @@ start_daemon() {
 
     require_root
     require_cmd udhcpc
-    container_exists "${name}" || die "Container '${name}' is not running. Run ./scripts/setup.sh first."
-
-    local pid
-    pid="$(container_pid "${name}")"
-    [[ -n "${pid}" && "${pid}" -gt 0 ]] || die "Could not get PID for container '${name}'"
+    netns_exists "${name}" || die "Namespace '${name}' is not running. Run sudo ./scripts/setup.sh first."
 
     stop_pidfile "${pidfile}"
 
     local -a extra_opts=()
     if [[ -n "${hostname}" ]]; then
         extra_opts+=(-x "hostname:${hostname}" -F "${hostname}")
-        docker exec "${name}" hostname "${hostname}" 2>/dev/null || true
+        printf '%s\n' "${hostname}" > "${STATE_DIR}/hostname-${name}.txt"
     fi
     if [[ -n "${CLIENT_DHCP_VENDOR:-}" ]]; then
         extra_opts+=(-V "${CLIENT_DHCP_VENDOR}")
@@ -125,7 +117,7 @@ start_daemon() {
 
     log_info "Starting udhcpc background daemon in ${name} (Host: '${hostname}', Vendor: '${CLIENT_DHCP_VENDOR:-<none>}')..."
 
-    nohup nsenter -t "${pid}" -n udhcpc \
+    nohup ip netns exec "${name}" udhcpc \
         -i eth0 \
         -b \
         -t 10 -T 3 \
@@ -137,7 +129,7 @@ start_daemon() {
     local bg_pid=$!
     sleep 0.5
     local ip_addr
-    ip_addr="$(docker exec "${name}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+    ip_addr="$(ip -n "${name}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
     log_info "${name} (${hostname}) udhcpc daemon started [PID $(cat "${pidfile}" 2>/dev/null || echo "${bg_pid}")], IP: ${ip_addr:-waiting...}"
 }
 
@@ -151,9 +143,9 @@ release_lease() {
         stop_pidfile "${pidfile}"
     fi
 
-    if container_exists "${name}"; then
-        docker exec "${name}" ip -4 addr flush dev eth0 2>/dev/null || true
-        docker exec "${name}" ip -4 route flush dev eth0 2>/dev/null || true
+    if netns_exists "${name}"; then
+        ip -n "${name}" -4 addr flush dev eth0 2>/dev/null || true
+        ip -n "${name}" -4 route flush dev eth0 2>/dev/null || true
     fi
     log_info "Released DHCP lease and flushed IP for ${name}."
 }
@@ -162,8 +154,8 @@ show_status() {
     local name="$1"
     local pidfile="${STATE_DIR}/udhcpc-${name}.pid"
 
-    if ! container_exists "${name}"; then
-        printf '  %-15s : Container not running\n' "${name}"
+    if ! netns_exists "${name}"; then
+        printf '  %-15s : Namespace not running\n' "${name}"
         return 0
     fi
 
@@ -173,10 +165,10 @@ show_status() {
     fi
 
     local ip_addr gw mac host
-    ip_addr="$(docker exec "${name}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | head -n1 || echo '<no-ip>')"
-    gw="$(docker exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || echo '<none>')"
-    mac="$(docker exec "${name}" cat /sys/class/net/eth0/address 2>/dev/null || echo '<unknown>')"
-    host="$(docker exec "${name}" hostname 2>/dev/null || echo '<default>')"
+    ip_addr="$(ip -n "${name}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | head -n1 || echo '<no-ip>')"
+    gw="$(ip netns exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || echo '<none>')"
+    mac="$(ip -n "${name}" link show dev eth0 2>/dev/null | awk '/link\/ether/ {print $2}' || echo '<unknown>')"
+    host="$(cat "${STATE_DIR}/hostname-${name}.txt" 2>/dev/null || echo '<default>')"
 
     printf '  %-15s | Host: %-16s | MAC: %s | IP: %-15s | GW: %-15s | %s\n' \
         "${name}" "${host}" "${mac}" "${ip_addr}" "${gw}" "${status}"

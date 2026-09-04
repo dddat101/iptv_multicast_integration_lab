@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # REAL IPTV MULTICAST TEST LAB - SHOW STATE
-# Displays runtime state of bridges, docker containers, streaming daemons, and captures
+# Displays runtime state of bridges, network namespaces, streaming daemons, and captures
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -11,12 +11,12 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
-show_container_details() {
+show_namespace_details() {
     local name="$1"
     local role="$2"
 
     printf '\n-- %s (%s) --\n' "${name}" "${role}"
-    if ! container_exists "${name}"; then
+    if ! netns_exists "${name}"; then
         if [[ "${WAN_ONLY:-0}" == "1" || "${SERVER_ONLY:-0}" == "1" ]] && [[ "${name}" != "${SERVER_NAME}" ]]; then
             printf '  Status: SKIPPED (WAN/Server-Only Mode)\n'
         else
@@ -25,15 +25,11 @@ show_container_details() {
         return 0
     fi
 
-    local pid
-    pid="$(container_pid "${name}")"
-    printf '  Container PID: %s\n' "${pid}"
-
     local ip_addr gw host mac ip_mode
-    ip_addr="$(docker exec "${name}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
-    gw="$(docker exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
-    host="$(docker exec "${name}" hostname 2>/dev/null || echo '<default>')"
-    mac="$(docker exec "${name}" cat /sys/class/net/eth0/address 2>/dev/null || echo '<unknown>')"
+    ip_addr="$(ip -n "${name}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+    gw="$(ip netns exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
+    host="$(cat "${STATE_DIR}/hostname-${name}.txt" 2>/dev/null || echo '<default>')"
+    mac="$(ip -n "${name}" link show dev eth0 2>/dev/null | awk '/link\/ether/ {print $2}' || echo '<unknown>')"
 
     ip_mode="Static"
     if is_pidfile_running "${STATE_DIR}/udhcpc-${name}.pid"; then
@@ -47,8 +43,10 @@ show_container_details() {
     printf '  Multicast Groups Joined:\n'
     while IFS= read -r g; do
         [[ -n "${g}" ]] && printf '    * %s\n' "${g}"
-    done < <(docker exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet / {print $2}' || true)
+    done < <(ip netns exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet / {print $2}' || true)
 }
+
+show_container_details() { show_namespace_details "$@"; }
 
 main() {
     load_config
@@ -112,11 +110,11 @@ main() {
         fi
     fi
 
-    printf '\n== Docker Application Containers ==\n'
-    show_container_details "${SERVER_NAME}" "FFmpeg Multicast Streamer"
+    printf '\n== Network Namespaces ==\n'
+    show_namespace_details "${SERVER_NAME}" "FFmpeg Multicast Streamer"
     if [[ "${wan_only}" == "0" ]]; then
-        show_container_details "${CLIENT1_NAME}" "VLC STB Client 1"
-        show_container_details "${CLIENT2_NAME}" "VLC STB Client 2"
+        show_namespace_details "${CLIENT1_NAME}" "VLC STB Client 1"
+        show_namespace_details "${CLIENT2_NAME}" "VLC STB Client 2"
     fi
 
     printf '\n'

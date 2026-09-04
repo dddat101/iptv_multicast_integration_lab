@@ -8,3 +8,5 @@ state/*
 media/*.ts
 media/*.mp4
 media/*.mkv
+__pycache__/
+*.py[cod]

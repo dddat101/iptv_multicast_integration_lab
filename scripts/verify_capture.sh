@@ -75,8 +75,6 @@ calculate_latency() {
 verify_full() {
     local pcap="$1"
     local group="${2:-${MCAST_GROUP}}"
-    local pass_count=0
-    local total_count=4
 
     require_cmd tshark
 
@@ -99,8 +97,7 @@ verify_full() {
         t_data="$((tshark -r "${pcap}" -Y "ip.dst == ${group} && udp.dstport == ${MCAST_PORT}" -T fields -e frame.time_epoch 2>/dev/null || true) | awk -v j="${t_join}" 'j == "" || $1 >= j {print $1; exit}')"
         if [[ -n "${t_join}" && -n "${t_data}" ]]; then
             latency_ms="$(awk -v d="${t_data}" -v j="${t_join}" 'BEGIN { printf "%.3f", (d - j) * 1000 }')"
-            latency_res="PASS"
-            pass_count=$((pass_count + 1))
+            latency_res="$(awk -v l="${latency_ms}" 'BEGIN { if (l <= 10.0) print "PASS (<=10ms)"; else print "INFO (>10ms)" }')"
         fi
     fi
 
@@ -108,9 +105,21 @@ verify_full() {
     local leave_count
     leave_count="$((tshark -r "${pcap}" -Y "igmp.type == 0x17 && igmp.maddr == ${group}" 2>/dev/null || true) | wc -l)"
 
-    [[ ${join_count} -gt 0 ]] && pass_count=$((pass_count + 1)) || true
-    [[ ${data_count} -gt 0 ]] && pass_count=$((pass_count + 1)) || true
-    [[ ${leave_count} -gt 0 ]] && pass_count=$((pass_count + 1)) || true
+    # 5. Check IGMP ToS / DSCP and DF bit
+    local igmp_tos igmp_df r15_res
+    igmp_tos="$((tshark -r "${pcap}" -Y "igmp" -T fields -e ip.tos 2>/dev/null || true) | sort -u | tr '\n' ',' | sed 's/,$//')"
+    igmp_df="$((tshark -r "${pcap}" -Y "igmp" -T fields -e ip.flags.df 2>/dev/null || true) | sort -u | tr '\n' ',' | sed 's/,$//')"
+    if [[ -z "${igmp_tos}" ]]; then
+        igmp_tos="N/A"
+        r15_res="N/A"
+    else
+        r15_res="RECORDED (${igmp_tos})"
+    fi
+
+    # 6. Check Source IP and MAC
+    local igmp_src_ips igmp_src_macs
+    igmp_src_ips="$((tshark -r "${pcap}" -Y "igmp" -T fields -e ip.src 2>/dev/null || true) | sort -u | tr '\n' ' ')"
+    igmp_src_macs="$((tshark -r "${pcap}" -Y "igmp" -T fields -e eth.src 2>/dev/null || true) | sort -u | tr '\n' ' ')"
 
     printf '\n==============================================================================\n'
     printf '                 IPTV MULTICAST LAB - VERIFICATION REPORT                      \n'
@@ -118,22 +127,26 @@ verify_full() {
     printf 'Capture File:     %s\n' "${pcap}"
     printf 'Multicast Group:  %s (UDP Port %s)\n' "${group}" "${MCAST_PORT}"
     printf '%s\n' '------------------------------------------------------------------------------'
-    printf '  %-35s | %-12s | %-10s\n' "Metric / Check" "Observed" "Result"
+    printf '  %-38s | %-16s | %-12s\n' "Metric / Protocol Check" "Observed" "Result"
     printf '%s\n' '------------------------------------------------------------------------------'
-    printf '  %-35s | %-12s | %-10s\n' "IGMPv2 Membership Reports (Join)" "${join_count}" "$([[ ${join_count} -gt 0 ]] && echo 'PASS' || echo 'FAIL')"
-    printf '  %-35s | %-12s | %-10s\n' "MPEG-TS Multicast Packets" "${data_count}" "$([[ ${data_count} -gt 0 ]] && echo 'PASS' || echo 'FAIL')"
-    printf '  %-35s | %-12s | %-10s\n' "Join-to-First-Data Latency" "${latency_ms} ms" "${latency_res}"
-    printf '  %-35s | %-12s | %-10s\n' "IGMPv2 Leave Messages" "${leave_count}" "$([[ ${leave_count} -gt 0 ]] && echo 'PASS' || echo 'INFO')"
+    printf '  %-38s | %-16s | %-12s\n' "IGMP Membership Reports (Join)" "${join_count}" "$([[ ${join_count} -gt 0 ]] && echo 'PASS' || echo 'FAIL')"
+    printf '  %-38s | %-16s | %-12s\n' "MPEG-TS Multicast Data Packets" "${data_count}" "$([[ ${data_count} -gt 0 ]] && echo 'PASS' || echo 'FAIL')"
+    printf '  %-38s | %-16s | %-12s\n' "Join-to-First-Data Latency" "${latency_ms} ms" "${latency_res}"
+    printf '  %-38s | %-16s | %-12s\n' "IGMP Leave Messages" "${leave_count}" "$([[ ${leave_count} -gt 0 ]] && echo 'PASS' || echo 'INFO')"
+    printf '  %-38s | %-16s | %-12s\n' "IGMP IPv4 ToS / DSCP Byte" "${igmp_tos}" "${r15_res}"
+    printf '  %-38s | %-16s | %-12s\n' "IGMP IP DF Flag" "${igmp_df:-N/A}" "$([[ "${igmp_df:-}" == *"1"* ]] && echo 'DF=1' || echo 'DF=0')"
+    printf '  %-38s | %-16s | %-12s\n' "IGMP Source IPs" "${igmp_src_ips:0:16}" "INSPECT"
     printf '==============================================================================\n'
 
     if (( join_count > 0 && data_count > 0 )); then
-        printf 'OVERALL RESULT: PASS (Real video streaming and IGMP signaling verified)\n'
+        printf 'FUNCTIONAL RESULT: PASS (Video streaming and IGMP signaling verified)\n'
         return 0
     else
-        printf 'OVERALL RESULT: FAIL (Missing join or multicast packets)\n'
+        printf 'FUNCTIONAL RESULT: FAIL (Missing join or multicast packets)\n'
         return 1
     fi
 }
+
 
 main() {
     load_config
@@ -144,7 +157,7 @@ main() {
     pcap_file="$(resolve_pcap "${pcap_arg}")"
 
     case "${mode}" in
-        summary|full)
+        summary|full|compliance)
             verify_full "${pcap_file}"
             ;;
         latency)
@@ -158,3 +171,4 @@ main() {
 }
 
 main "$@"
+

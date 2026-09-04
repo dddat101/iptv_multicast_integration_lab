@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # REAL IPTV MULTICAST TEST LAB - VLC CLIENT MANAGER
-# Starts VLC media receiver inside client containers to trigger real IGMP Join.
+# Starts VLC media receiver inside client namespaces to trigger real IGMP Join.
 # Supports interactive running ('run') and background daemon ('start' / 'stop').
 # ==============================================================================
 
@@ -15,7 +15,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 usage() {
     cat <<'USAGE'
 Usage:
-  ./scripts/start_client.sh [1|2] [command]
+  sudo ./scripts/start_client.sh [1|2] [command]
 
 Commands:
   run             Run VLC receiver interactively in foreground [Default if TTY]
@@ -25,7 +25,7 @@ Commands:
 USAGE
 }
 
-get_container_name() {
+get_client_name() {
     local client_id="$1"
     case "${client_id}" in
         1) printf '%s\n' "${CLIENT1_NAME}" ;;
@@ -34,35 +34,49 @@ get_container_name() {
     esac
 }
 
+get_client_user() {
+    local user="${SUDO_USER:-}"
+    if [[ -z "${user}" || "${user}" == "root" ]]; then
+        user="$(awk -F: '$3 >= 1000 && $3 < 65534 {print $1; exit}' /etc/passwd 2>/dev/null || echo "nobody")"
+    fi
+    printf '%s\n' "${user}"
+}
+
 run_foreground() {
     local id="$1"
     local name
-    name="$(get_container_name "${id}")"
+    name="$(get_client_name "${id}")"
+    local user
+    user="$(get_client_user)"
 
-    check_docker
-    container_exists "${name}" || die "Container '${name}' is not running. Run ./scripts/setup.sh first."
+    require_root
+    require_cmd cvlc
+    netns_exists "${name}" || die "Namespace '${name}' is not running. Run sudo ./scripts/setup.sh first."
 
-    log_info "Starting VLC receiver in ${name} (Foreground) for ${MCAST_GROUP}:${MCAST_PORT}..."
-    docker exec -it "${name}" cvlc -I dummy --no-audio --vout=dummy --no-video-title-show "udp://@${MCAST_GROUP}:${MCAST_PORT}"
+    log_info "Starting VLC receiver in ${name} as ${user} (Foreground) for ${MCAST_GROUP}:${MCAST_PORT}..."
+    ip netns exec "${name}" runuser -u "${user}" -- cvlc -I dummy --no-audio --vout=dummy --no-video-title-show "udp://@${MCAST_GROUP}:${MCAST_PORT}"
 }
 
 start_background() {
     local id="$1"
     local name
-    name="$(get_container_name "${id}")"
+    name="$(get_client_name "${id}")"
+    local user
+    user="$(get_client_user)"
     local pidfile="${STATE_DIR}/client_${id}.pid"
     local logfile="${LOG_DIR}/client_${id}.log"
 
-    check_docker
-    container_exists "${name}" || die "Container '${name}' is not running. Run ./scripts/setup.sh first."
+    require_root
+    require_cmd cvlc
+    netns_exists "${name}" || die "Namespace '${name}' is not running. Run sudo ./scripts/setup.sh first."
 
     if is_pidfile_running "${pidfile}"; then
         log_warn "Client ${id} (${name}) already running (PID $(cat "${pidfile}"))."
         return 0
     fi
 
-    log_info "Starting background VLC receiver in ${name} for ${MCAST_GROUP}:${MCAST_PORT}..."
-    nohup docker exec "${name}" cvlc -I dummy --no-audio --vout=dummy --no-video-title-show "udp://@${MCAST_GROUP}:${MCAST_PORT}" \
+    log_info "Starting background VLC receiver in ${name} as ${user} for ${MCAST_GROUP}:${MCAST_PORT}..."
+    nohup ip netns exec "${name}" runuser -u "${user}" -- cvlc -I dummy --no-audio --vout=dummy --no-video-title-show "udp://@${MCAST_GROUP}:${MCAST_PORT}" \
         >"${logfile}" 2>&1 &
 
     local pid=$!
@@ -82,9 +96,10 @@ start_background() {
 stop_background() {
     local id="$1"
     local name
-    name="$(get_container_name "${id}")"
+    name="$(get_client_name "${id}")"
     local pidfile="${STATE_DIR}/client_${id}.pid"
 
+    require_root
     if is_pidfile_running "${pidfile}"; then
         local pid
         pid="$(cat "${pidfile}")"
@@ -94,17 +109,19 @@ stop_background() {
         rm -f "${pidfile}" 2>/dev/null || true
     fi
 
-    # Terminate VLC inside container gracefully to trigger IGMP Leave signaling
-    docker exec "${name}" pkill -TERM -f vlc 2>/dev/null || true
-    sleep 0.2
-    docker exec "${name}" pkill -KILL -f vlc 2>/dev/null || true
+    # Terminate VLC inside namespace gracefully to trigger IGMP Leave signaling
+    if netns_exists "${name}"; then
+        ip netns exec "${name}" pkill -TERM -f vlc 2>/dev/null || true
+        sleep 0.2
+        ip netns exec "${name}" pkill -KILL -f vlc 2>/dev/null || true
+    fi
     log_info "VLC receiver in ${name} stopped."
 }
 
 show_status() {
     local id="$1"
     local name
-    name="$(get_container_name "${id}")"
+    name="$(get_client_name "${id}")"
     local pidfile="${STATE_DIR}/client_${id}.pid"
 
     printf '== Client %s (%s) Status ==\n' "${id}" "${name}"
@@ -114,12 +131,12 @@ show_status() {
         printf 'Status:     STOPPED\n'
     fi
 
-    if container_exists "${name}"; then
+    if netns_exists "${name}"; then
         local ip_addr
-        ip_addr="$(docker exec "${name}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+        ip_addr="$(ip netns exec "${name}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
         printf 'IP Address: %s\n' "${ip_addr:-<none>}"
         printf 'Multicast Groups Joined:\n'
-        docker exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet / {print "  - " $2}' || true
+        ip netns exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet / {print "  - " $2}' || true
     fi
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # REAL IPTV MULTICAST TEST LAB - COMMON LIBRARY
-# Standard framework helpers: logging, lifecycle, interface safety, docker, netns
+# Standard framework helpers: logging, lifecycle, interface safety, netns
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -54,7 +54,6 @@ load_config() {
     : "${WAN_DHCP_START:=10.10.0.1}"
     : "${WAN_DHCP_END:=10.10.0.50}"
     : "${WAN_DHCP_LEASE:=12h}"
-    : "${MEDIA_IMAGE:=multicast-media-tools:latest}"
     : "${MEDIA_FILE:=sample_1080p_8mbps.ts}"
     : "${MEDIA_DIR:=./media}"
     : "${MCAST_GROUP:=239.10.10.10}"
@@ -62,14 +61,14 @@ load_config() {
     : "${MCAST_TTL:=16}"
     : "${MPEGTS_PKT_SIZE:=1316}"
     : "${STREAM_BITRATE:=8M}"
-    : "${SERVER_NAME:=mcast-server}"
+    : "${SERVER_NAME:=ns-server}"
     : "${SERVER_IP:=10.10.0.2/24}"
     : "${SERVER_GW:=10.10.0.1}"
-    : "${CLIENT1_NAME:=mcast-client1}"
+    : "${CLIENT1_NAME:=ns-stb1}"
     : "${CLIENT1_IP:=10.20.0.11/24}"
     : "${CLIENT1_GW:=10.20.0.1}"
     : "${CLIENT1_HOSTNAME:=stb-living-room}"
-    : "${CLIENT2_NAME:=mcast-client2}"
+    : "${CLIENT2_NAME:=ns-stb2}"
     : "${CLIENT2_IP:=10.20.0.12/24}"
     : "${CLIENT2_GW:=10.20.0.1}"
     : "${CLIENT2_HOSTNAME:=stb-bedroom}"
@@ -154,6 +153,11 @@ bridge_exists() {
     ip link show dev "${bridge}" >/dev/null 2>&1
 }
 
+require_test_if_present() {
+    local iface="$1"
+    iface_exists_root "${iface}" || die "Interface not found in root namespace: ${iface}"
+}
+
 assert_safe_test_if() {
     local iface="$1"
 
@@ -213,81 +217,101 @@ cleanup_bridge_and_nic() {
 }
 
 # ------------------------------------------------------------------------------
-# Docker Container Helpers
+# Linux Network Namespace (netns) Helpers
 # ------------------------------------------------------------------------------
-check_docker() {
-    require_cmd docker
-    docker info >/dev/null 2>&1 || die "Docker daemon is not running or current user lacks access."
+netns_exists() {
+    local ns="$1"
+    ns_exists "${ns}"
 }
 
-container_exists() {
-    local name="$1"
-    docker inspect "${name}" >/dev/null 2>&1
-}
-
-container_pid() {
-    local name="$1"
-    docker inspect -f '{{.State.Pid}}' "${name}" 2>/dev/null || true
-}
-
-start_idle_container() {
-    local name="$1"
-    if container_exists "${name}"; then
-        docker rm -f "${name}" >/dev/null 2>&1 || true
+netns_create() {
+    local ns="$1"
+    if ! ns_exists "${ns}"; then
+        ip netns add "${ns}"
     fi
-
-    check_docker
-    docker run -d --rm --network none \
-        --name "${name}" \
-        -v "${MEDIA_DIR}:/media:ro" \
-        "${MEDIA_IMAGE}" -lc 'exec sleep infinity' >/dev/null
+    ip -n "${ns}" link set lo up
 }
 
-attach_container_to_bridge() {
-    local name="$1"
+netns_del() {
+    local ns="$1"
+    if ns_exists "${ns}"; then
+        local pids
+        pids="$(ip netns pids "${ns}" 2>/dev/null || true)"
+        if [[ -n "${pids}" ]]; then
+            # shellcheck disable=SC2086
+            kill -TERM ${pids} 2>/dev/null || true
+            sleep 0.1
+            # shellcheck disable=SC2086
+            kill -KILL ${pids} 2>/dev/null || true
+        fi
+        ip netns del "${ns}" 2>/dev/null || true
+    fi
+}
+
+attach_netns_to_bridge() {
+    local ns="$1"
     local bridge="$2"
     local host_veth="$3"
     local peer_veth="$4"
-    local cidr="$5"
-    local gateway="$6"
+    local cidr="${5:-}"
+    local gateway="${6:-}"
     local hostname="${7:-}"
-    local pid
 
-    pid="$(container_pid "${name}")"
-    [[ -n "${pid}" && "${pid}" -gt 0 ]] || die "Could not get PID for container ${name}"
+    netns_create "${ns}"
 
     ip link del "${host_veth}" 2>/dev/null || true
     ip link add "${host_veth}" type veth peer name "${peer_veth}"
     ip link set "${host_veth}" master "${bridge}"
     ip link set "${host_veth}" up
-    ip link set "${peer_veth}" netns "${pid}"
+    ip link set "${peer_veth}" netns "${ns}"
 
-    nsenter -t "${pid}" -n ip link set lo up
-    nsenter -t "${pid}" -n ip link set "${peer_veth}" name eth0
-    nsenter -t "${pid}" -n ip addr flush dev eth0 2>/dev/null || true
+    ip -n "${ns}" link set lo up
+    ip -n "${ns}" link set "${peer_veth}" name eth0
+    ip -n "${ns}" addr flush dev eth0 2>/dev/null || true
     if [[ -n "${cidr}" ]]; then
-        nsenter -t "${pid}" -n ip addr add "${cidr}" dev eth0
+        ip -n "${ns}" addr add "${cidr}" dev eth0
     fi
-    nsenter -t "${pid}" -n ip link set eth0 up
+    ip -n "${ns}" link set eth0 up
     if [[ -n "${gateway}" ]]; then
-        nsenter -t "${pid}" -n ip route replace default via "${gateway}" dev eth0
+        ip -n "${ns}" route replace default via "${gateway}" dev eth0 2>/dev/null || true
     fi
+
+    ip -n "${ns}" sysctl -q -w "net.ipv4.igmp_max_memberships=256" 2>/dev/null || true
 
     if [[ -n "${hostname}" ]]; then
-        nsenter -t "${pid}" -u hostname "${hostname}" 2>/dev/null || true
-        printf '%s\n' "${hostname}" > "${STATE_DIR}/hostname-${name}.txt"
+        printf '%s\n' "${hostname}" > "${STATE_DIR}/hostname-${ns}.txt"
     fi
 }
 
-force_container_igmp_version() {
-    local name="$1"
+force_netns_igmp_version() {
+    local ns="$1"
     local version="$2"
-    local pid
-    pid="$(container_pid "${name}")"
-    [[ -n "${pid}" && "${pid}" -gt 0 ]] || return 0
-    nsenter -t "${pid}" -n sysctl -q -w "net.ipv4.conf.all.force_igmp_version=${version}" 2>/dev/null || true
-    nsenter -t "${pid}" -n sysctl -q -w "net.ipv4.conf.eth0.force_igmp_version=${version}" 2>/dev/null || true
+    if ns_exists "${ns}"; then
+        ip -n "${ns}" sysctl -q -w "net.ipv4.conf.all.force_igmp_version=${version}" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv4.conf.eth0.force_igmp_version=${version}" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv4.igmp_max_memberships=256" 2>/dev/null || true
+    fi
 }
+
+run_in_netns_user() {
+    local ns="$1"
+    shift
+    if [[ ${EUID} -eq 0 ]]; then
+        local user="${SUDO_USER:-}"
+        if [[ -z "${user}" || "${user}" == "root" ]]; then
+            user="$(awk -F: '$3 >= 1000 && $3 < 65534 {print $1; exit}' /etc/passwd 2>/dev/null || echo "nobody")"
+        fi
+        ip netns exec "${ns}" runuser -u "${user}" -- "$@"
+    else
+        ip netns exec "${ns}" "$@"
+    fi
+}
+
+# Compatibility wrappers
+container_exists() { netns_exists "$@"; }
+attach_container_to_bridge() { attach_netns_to_bridge "$@"; }
+force_container_igmp_version() { force_netns_igmp_version "$@"; }
+
 
 # ------------------------------------------------------------------------------
 # Virtual DUT Simulation
@@ -402,7 +426,7 @@ namespace_ip() {
 }
 
 # ------------------------------------------------------------------------------
-# Direct Standalone WAN Server & DHCP Helpers (Host-level, no Docker bridge)
+# Direct Standalone WAN Server & DHCP Helpers (Host-level, no topology bridge)
 # ------------------------------------------------------------------------------
 configure_direct_wan_interface() {
     local iface="$1"

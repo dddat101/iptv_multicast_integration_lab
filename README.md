@@ -5,19 +5,19 @@ A production-grade, reproducible multicast test environment designed to validate
 Unlike synthetic socket tests, this lab uses **real application/protocol stacks**:
 * **Media Server**: **FFmpeg** streaming 1080p MPEG-TS over UDP Multicast (`239.10.10.10:5000`).
 * **STB Clients**: **VLC (cvlc)** clients invoking native kernel `IP_ADD_MEMBERSHIP` socket options to generate standard IGMPv2 Report signaling.
-* **Network Flexibility**: Supports full containerized test topology, WAN-only container topology, or direct standalone host streaming without Docker bridges.
+* **Network Flexibility**: Native Linux Network Namespaces (`ip netns`), L2 test bridges, or direct standalone host streaming without topology bridges. Zero Docker dependency.
 
 ---
 
 ## Deployment Modes Matrix
 
-| Mode | Command | Bridges | Containers | Physical NICs | Typical Use Case |
+| Mode | Command | Bridges | Namespaces | Physical NICs | Typical Use Case |
 |---|---|---|---|---|---|
 | **Standalone WAN Server** *(Zero Topology)* | `sudo ./scripts/start_wan_server.sh run` | None | None | `WAN_IF` only | Linux PC acts as IPTV headend directly on Router WAN port; clients test on Router LAN/Wi-Fi |
-| **WAN-Only Container** | `sudo ./scripts/setup.sh --wan-only` | `br-test-wan` | `mcast-server` | `WAN_IF` only | Containerized IPTV headend with isolated network namespace & DHCP |
-| **Physical Server-Only** | `sudo ./scripts/setup.sh -p -s` | `br-test-wan`, `br-test-lan` | `mcast-server` | `WAN_IF` & `LAN_IF` | Router in the middle; external physical/Windows client on LAN bridge |
-| **Full Physical DUT** | `sudo ./scripts/setup.sh --physical` | `br-test-wan`, `br-test-lan` | `mcast-server`, `mcast-client1,2` | `WAN_IF` & `LAN_IF` | Full automated physical qualification test with internal STB containers |
-| **Virtual Simulation** | `sudo ./scripts/setup.sh --virtual` | `br-test-wan`, `br-test-lan` | `mcast-server`, `ns-dut`, clients | None | Local development, debugging, and headless CI pipelines |
+| **WAN-Only Namespace** | `sudo ./scripts/setup.sh --wan-only` | `br-test-wan` | `ns-server`, `ns-wan` | `WAN_IF` only | Isolated IPTV headend with network namespace & WAN DHCP |
+| **Physical Server-Only** | `sudo ./scripts/setup.sh -p -s` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-wan` | `WAN_IF` & `LAN_IF` | Router in the middle; external physical/Windows client on LAN bridge |
+| **Full Physical DUT** | `sudo ./scripts/setup.sh --physical` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-stb1,2`, `ns-wan` | `WAN_IF` & `LAN_IF` | Full automated physical qualification test with internal STB namespaces |
+| **Virtual Simulation** | `sudo ./scripts/setup.sh --virtual` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-dut`, `ns-stb1,2` | None | Local development, debugging, and headless CI pipelines |
 
 ---
 
@@ -28,7 +28,7 @@ Unlike synthetic socket tests, this lab uses **real application/protocol stacks*
 ```mermaid
 flowchart TD
     subgraph WAN_Side["Upstream WAN Side (10.10.0.0/24)"]
-        SRV["mcast-server (Docker)\nFFmpeg MPEG-TS Streamer\n10.10.0.2/24"]
+        SRV["ns-server (Netns)\nFFmpeg MPEG-TS Streamer\n10.10.0.2/24"]
         CTL["ns-wan (Control Netns)\nWAN DHCP Server (dnsmasq)\n10.10.0.254/24"]
         BR_WAN["br-test-wan (L2 Bridge)\nmcast_snooping=0"]
         SRV --- BR_WAN
@@ -44,8 +44,8 @@ flowchart TD
 
     subgraph LAN_Side["Downstream LAN Side (10.20.0.0/24)"]
         BR_LAN["br-test-lan (L2 Bridge)\nmcast_snooping=0"]
-        C1["mcast-client1 (Docker)\nVLC STB: stb-living-room\n10.20.0.11/24"]
-        C2["mcast-client2 (Docker)\nVLC STB: stb-bedroom\n10.20.0.12/24"]
+        C1["ns-stb1 (Netns)\nVLC STB: stb-living-room\n10.20.0.11/24"]
+        C2["ns-stb2 (Netns)\nVLC STB: stb-bedroom\n10.20.0.12/24"]
         BR_LAN --- C1
         BR_LAN --- C2
     end
@@ -131,7 +131,8 @@ sequenceDiagram
 iptv_multicast_integration_lab/
 ├── config.env.example        # Reference configuration template
 ├── config.env                # Local host-specific configuration
-├── Dockerfile.media          # Ubuntu 24.04 image with FFmpeg, VLC, iproute2
+├── config/
+│   └── pimd.conf             # PIM-SM/SSM daemon configuration template
 ├── captures/                 # Timestamped PCAP evidence files (*.pcap)
 ├── logs/                     # Daemon logs (server.log, client_*.log, dnsmasq-*.log)
 ├── media/                    # MPEG-TS video assets (sample_1080p_8mbps.ts)
@@ -139,36 +140,47 @@ iptv_multicast_integration_lab/
 ├── docs/
 │   ├── SHELL_STYLE.md        # Strict mode & safety guidelines
 │   └── TEST_PLAN.md          # Test plan & compliance matrix
+├── tools/                    # Standalone Python 3 Multicast & IGMP tools
+│   ├── igmp_client.py        # High-performance multi-group join/leave/churn client
+│   ├── igmp_query.py         # Raw AF_PACKET IGMP query injector (General & Specific)
+│   ├── mcast_sender.py       # High-precision UDP multicast transmitter with sequence tagging
+│   └── mcast_receiver.py     # UDP multicast receiver with sequence & loss analysis
 └── scripts/
     ├── lib/
-    │   ├── common.sh         # Core framework library (logging, docker, direct WAN, safety)
-    │   └── udhcpc.script     # BusyBox udhcpc event script for container LAN DHCP
-    ├── client_dhcp.sh        # LAN DHCP client manager for STB containers (request | daemon | status | release)
+    │   ├── common.sh         # Core framework library (logging, netns, safety)
+    │   └── udhcpc.script     # BusyBox udhcpc event script for namespace LAN DHCP
+    ├── install_deps.sh       # One-touch host dependency installer (apt-based)
+    ├── client_dhcp.sh        # LAN DHCP client manager for STB namespaces (request | daemon | status | release)
     ├── start_wan_server.sh   # Standalone WAN IPTV server (Zero Topology, host-direct)
-    ├── start_server.sh       # Streamer manager (--direct host mode or --container mode)
+    ├── start_server.sh       # Streamer manager (--direct host mode or --netns mode)
     ├── setup.sh              # Topology setup (--physical, --virtual, --wan-only, --server-only, --dhcp, --static)
-    ├── cleanup.sh            # Idempotent cleanup of containers, veths, bridges, direct daemons
-    ├── show_state.sh         # Displays runtime state, bridges, containers, groups, DHCP leases
+    ├── cleanup.sh            # Idempotent cleanup of namespaces, veths, bridges, direct daemons
+    ├── show_state.sh         # Displays runtime state, bridges, namespaces, groups, DHCP leases
     ├── capture.sh            # Packet capture manager (start | stop | status)
-    ├── build_image.sh        # Builds multicast-media-tools:latest Docker image
     ├── generate_media.sh     # Generates deterministic 1080p 8Mbps MPEG-TS sample
     ├── diagnose.sh           # Non-destructive pre-flight check of host, NICs, tools
     ├── start_client.sh       # VLC STB client manager (run | start | stop | status)
     ├── scenario.sh           # Multi-phase automated smoke scenario
     ├── verify_capture.sh     # Automated PCAP verification & latency analysis
-    └── view_stream_gui.sh    # Desktop GUI player (VLC/FFplay) on Ubuntu host with auto routing
+    ├── view_stream_gui.sh    # Desktop GUI player (VLC/FFplay) on Ubuntu host with auto routing
+    ├── benchmark_suite.sh    # Comprehensive benchmark suite (scale, churn, stress, loss)
+    └── dut_collector.sh      # Remote router state and multicast diagnostics collector
 ```
 
 ---
 
 ## Prerequisites
 
-Install host dependencies:
+Install host dependencies with one command:
 
 ```bash
+sudo ./scripts/install_deps.sh
+```
+
+Or manually install packages via `apt`:
+```bash
 sudo apt update
-sudo apt install -y docker.io iproute2 ethtool tshark tcpdump ffmpeg dnsmasq util-linux usbutils vlc
-sudo systemctl enable --now docker
+sudo apt install -y iproute2 ethtool tshark tcpdump ffmpeg vlc udhcpc dnsmasq python3 util-linux usbutils
 ```
 
 ---
@@ -192,13 +204,9 @@ LAN_IF="enx00e04c88293c"   # Connected to DUT LAN port (only needed if using LAN
 
 ---
 
-### Step 2: Build Image & Generate Media Asset
+### Step 2: Generate Media Asset
 
 ```bash
-# 1. Build Docker image:
-./scripts/build_image.sh
-
-# 2. Generate 1080p 8Mbps MPEG-TS test video:
 ./scripts/generate_media.sh
 ```
 
@@ -219,26 +227,26 @@ sudo ./scripts/start_wan_server.sh start
 ./scripts/start_wan_server.sh status
 sudo ./scripts/start_wan_server.sh stop
 ```
-* **No Docker bridges or containers needed.**
+* **No test bridges or namespaces needed.**
 * Automatically unmanages `WAN_IF` from NetworkManager and assigns `10.10.0.2/24`.
 * Automatically runs an isolated WAN DHCP server (`dnsmasq`) bound strictly to `WAN_IF` (`port=0`, no DNS listener conflict) to provide an IP to the router's WAN port.
 * Directly streams FFmpeg MPEG-TS out `WAN_IF`.
 
-#### Mode 2: WAN-Only Container Topology Mode
-Use this if you prefer Docker container isolation for the media server, but only have `WAN_IF` connected (no `LAN_IF` or LAN bridge):
+#### Mode 2: WAN-Only Namespace Topology Mode
+Use this if you prefer network namespace isolation for the media server, but only have `WAN_IF` connected (no `LAN_IF` or LAN bridge):
 
 ```bash
 sudo ./scripts/setup.sh --wan-only
 # Short syntax: sudo ./scripts/setup.sh -w
 ```
-Deploys `br-test-wan`, `WAN_NS` (DHCP), and `mcast-server` container on `WAN_IF`, skipping all LAN bridges and client containers.
+Deploys `br-test-wan`, `WAN_NS` (DHCP), and `ns-server` namespace on `WAN_IF`, skipping all LAN bridges and client namespaces.
 
 #### Mode 3: Server-Only Physical Topology Mode
 ```bash
 sudo ./scripts/setup.sh --physical --server-only
 # Short syntax: sudo ./scripts/setup.sh -p -s
 ```
-Deploys both `br-test-wan` and `br-test-lan` and starts streaming, but skips client containers so you can connect external test devices to `LAN_IF`.
+Deploys both `br-test-wan` and `br-test-lan` and starts streaming, but skips client namespaces so you can connect external test devices to `LAN_IF`.
 
 #### Mode 4: Full Physical DUT Mode (Automated End-to-End)
 ```bash
@@ -248,7 +256,7 @@ sudo ./scripts/setup.sh --physical --dhcp
 # Static Mode: Clients use static IPs from config.env (10.20.0.11/24, 10.20.0.12/24)
 sudo ./scripts/setup.sh --physical --static
 ```
-Deploys both bridges, starts media server streaming, and launches internal STB client containers (`mcast-client1`, `mcast-client2`). When running in DHCP mode, clients automatically send DHCP Discover requests with:
+Deploys both bridges, starts media server streaming in `ns-server`, and launches internal STB client namespaces (`ns-stb1`, `ns-stb2`). When running in DHCP mode, clients automatically send DHCP Discover requests with:
 * **Option 12 (Host Name)**: `stb-living-room` and `stb-bedroom`
 * **Option 60 (Vendor Class Identifier)**: `IPTV_STB`
 
@@ -266,7 +274,7 @@ Verify state anytime with:
 
 ### Step 4: LAN Client DHCP Management (`client_dhcp.sh`)
 
-You can inspect, request, or renew DHCP leases for container STB clients at any time:
+You can inspect, request, or renew DHCP leases for namespace STB clients at any time:
 
 ```bash
 # Check current lease status, IP, gateway, and MAC for all clients:
@@ -386,13 +394,13 @@ OVERALL RESULT: PASS (Real video streaming and IGMP signaling verified)
 
 ### Step 8: Cleanup & Interface Restoration
 
-To stop all streams, daemons, containers, and **automatically restore all physical interfaces (`WAN_IF`, `LAN_IF`) to UP state with DHCP**:
+To stop all streams, daemons, namespaces, and **automatically restore all physical interfaces (`WAN_IF`, `LAN_IF`) to UP state with DHCP**:
 
 ```bash
 sudo ./scripts/cleanup.sh
 # Explicit restore flag: sudo ./scripts/cleanup.sh --restore (or -r, --dhcp)
 ```
-* Tears down test containers, bridges, veth pairs, and DHCP servers.
+* Tears down test namespaces, bridges, veth pairs, and DHCP servers.
 * Automatically detaches physical interfaces from test bridges and flushes test IPs (`10.10.0.x`).
 * Brings physical links `UP`, restores NetworkManager management, and triggers DHCP to acquire IPs from whatever network they are connected to.
 
@@ -461,7 +469,7 @@ ip.dst == 239.10.10.10 && udp.dstport == 5000
 * Ensure `ENABLE_WAN_DHCP="1"` in `config.env`.
 * Run `./scripts/show_state.sh` or check active leases:
   - For standalone mode: `cat state/dnsmasq-direct.leases`
-  - For container mode: `cat state/dnsmasq-wan.leases`
+  - For namespace mode: `cat state/dnsmasq-wan.leases`
 * Check the physical cable connection between `WAN_IF` and the router's WAN port.
 
 ### 3. VLC GUI on Ubuntu doesn't receive stream
@@ -475,3 +483,48 @@ ip.dst == 239.10.10.10 && udp.dstport == 5000
   ```bash
   ./scripts/generate_media.sh
   ```
+
+---
+
+## Multicast Benchmark & RFC Verification Suite
+
+This lab incorporates specialized benchmark tools and RFC compliance test harnesses to evaluate multicast routers, CPEs, and gateways (RFC 2236, RFC 3376, RFC 4541, RFC 4605).
+
+### 1. Benchmark Scripts & Tools
+
+| Script / Tool | Category | Description |
+|---|---|---|
+| [`./scripts/benchmark_suite.sh`](scripts/benchmark_suite.sh) | **Master Suite** | Master runner executing all benchmark tests and generating comprehensive report |
+| [`./scripts/test_scale.sh`](scripts/test_scale.sh) | **Capacity Scale** | Joins N distinct groups (`239.100.1.1-32`); evaluates router snooping and table capacity |
+| [`./scripts/test_churn.sh`](scripts/test_churn.sh) | **Rapid Churn** | Executes rapid Join/Leave cycles (e.g. 100ms) to evaluate control-plane stability |
+| [`./scripts/test_query_stress.sh`](scripts/test_query_stress.sh) | **Query Stress** | Injects high-rate Group-Specific Queries (e.g. 250 qps) addressed to the multicast group |
+| [`./scripts/test_packet_loss.sh`](scripts/test_packet_loss.sh) | **Packet Loss** | Generates sequence-tracked packets across multiple groups; verifies loss ratio |
+| [`./scripts/test_foreign_querier.sh`](scripts/test_foreign_querier.sh) | **Querier Election** | Injects foreign LAN querier frames to evaluate querier election and port behavior |
+| [`./scripts/dut_collector.sh`](scripts/dut_collector.sh) | **Diagnostics** | SSH/UART diagnostic collector for router multicast routes, snooping tables, and kernel status |
+| [`./scripts/verify_capture.sh compliance`](scripts/verify_capture.sh) | **Traffic Audit** | Analyzes PCAP captures for ToS/DSCP, DF bit, join latency, and source MAC/IP |
+
+### 2. Standalone Protocol Tools (`tools/`)
+
+All protocol test tools in `tools/` are standalone Python 3 utilities utilizing the standard library (no pip dependencies):
+* **`tools/igmp_client.py`**: High-performance IGMP client supporting range syntax (`239.100.1.1-32`), hold durations, rapid churn loops, and IGMPv3 SSM (`--sources`).
+* **`tools/igmp_query.py`**: Raw `AF_PACKET` socket query injector supporting General and Group-Specific Queries, configurable rates, custom source IP/MAC, ToS byte (`--tos`), and DF bit (`--df`).
+* **`tools/mcast_sender.py`**: High-precision UDP multicast transmitter with per-group and global sequence numbers, configurable payload sizing, and pacing.
+* **`tools/mcast_receiver.py`**: Multi-group UDP receiver measuring out-of-order packets, sequence gaps, missing packet count, and exact loss ratios.
+
+### 3. Running the Benchmark Suite
+
+```bash
+# 1. Run all benchmark tests and generate a summary report
+./scripts/benchmark_suite.sh all
+
+# 2. Run specific benchmarks
+./scripts/benchmark_suite.sh scale       # Multicast group capacity scale benchmark
+./scripts/benchmark_suite.sh churn       # Rapid Join/Leave churn stability benchmark
+./scripts/benchmark_suite.sh stress      # High-rate query stress benchmark
+./scripts/benchmark_suite.sh loss        # Multi-group packet loss benchmark
+./scripts/benchmark_suite.sh querier     # Foreign LAN querier benchmark
+./scripts/benchmark_suite.sh diagnostics # Collect router multicast tables & status
+./scripts/benchmark_suite.sh pcap        # Verify packet timing & headers in capture
+```
+
+

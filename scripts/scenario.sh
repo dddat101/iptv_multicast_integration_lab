@@ -20,8 +20,8 @@ cleanup_scenario() {
 }
 
 main() {
+    require_root
     load_config
-    check_docker
 
     trap cleanup_scenario EXIT INT TERM
 
@@ -30,10 +30,10 @@ main() {
     printf '==============================================================================\n'
 
     # Phase 0: Validate environment
-    log_info "Phase 0: Validating environment and containers..."
-    container_exists "${SERVER_NAME}"  || die "Server '${SERVER_NAME}' not running. Run ./scripts/setup.sh first."
-    container_exists "${CLIENT1_NAME}" || die "Client 1 '${CLIENT1_NAME}' not running. Run ./scripts/setup.sh first."
-    container_exists "${CLIENT2_NAME}" || die "Client 2 '${CLIENT2_NAME}' not running. Run ./scripts/setup.sh first."
+    log_info "Phase 0: Validating environment and namespaces..."
+    netns_exists "${SERVER_NAME}"  || die "Server '${SERVER_NAME}' not running. Run sudo ./scripts/setup.sh first."
+    netns_exists "${CLIENT1_NAME}" || die "Client 1 '${CLIENT1_NAME}' not running. Run sudo ./scripts/setup.sh first."
+    netns_exists "${CLIENT2_NAME}" || die "Client 2 '${CLIENT2_NAME}' not running. Run sudo ./scripts/setup.sh first."
 
     if [[ ! -f "${MEDIA_DIR}/${MEDIA_FILE}" ]]; then
         log_warn "Media file missing. Auto-generating 1080p sample with scripts/generate_media.sh..."
@@ -52,14 +52,14 @@ main() {
 
     # Phase 3: Client 1 joins the stream
     local c1_ip
-    c1_ip="$(docker exec "${CLIENT1_NAME}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
+    c1_ip="$(ip -n "${CLIENT1_NAME}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
     log_info "Phase 3: Starting VLC in ${CLIENT1_NAME} (IP: ${c1_ip}) (sends IGMPv2 Join)..."
     "${SCRIPT_DIR}/start_client.sh" 1 start
     sleep 4
 
     # Phase 4: Client 2 joins the stream (Multi-client verification)
     local c2_ip
-    c2_ip="$(docker exec "${CLIENT2_NAME}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
+    c2_ip="$(ip -n "${CLIENT2_NAME}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
     log_info "Phase 4: Starting VLC in ${CLIENT2_NAME} (IP: ${c2_ip}) (Multi-client join)..."
     "${SCRIPT_DIR}/start_client.sh" 2 start
     sleep 3

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # REAL IPTV MULTICAST TEST LAB - CLEANUP
-# Idempotently tears down containers, veths, netns, bridges, standalone daemons,
+# Idempotently tears down netns, veths, bridges, standalone daemons,
 # and restores physical interfaces to UP state with DHCP.
 # ==============================================================================
 
@@ -48,7 +48,7 @@ main() {
 
     log_info "Initiating cleanup of IPTV Multicast Lab (restore_interfaces=${restore})..."
 
-    # 1. Stop capture and streaming daemon processes (direct and container)
+    # 1. Stop capture and streaming daemon processes (direct and namespace)
     if [[ -x "${SCRIPT_DIR}/capture.sh" ]]; then
         "${SCRIPT_DIR}/capture.sh" stop 2>/dev/null || true
     fi
@@ -60,7 +60,7 @@ main() {
     # Direct WAN DHCP server
     direct_wan_dhcp_server stop 2>/dev/null || true
 
-    # Container daemons
+    # Namespace streamer and client daemons
     stop_pidfile "${STATE_DIR}/server.pid"
     stop_pidfile "${STATE_DIR}/client_1.pid"
     stop_pidfile "${STATE_DIR}/client_2.pid"
@@ -72,28 +72,24 @@ main() {
     stop_pidfile "${STATE_DIR}/udhcpc-${CLIENT1_NAME}.pid"
     stop_pidfile "${STATE_DIR}/udhcpc-${CLIENT2_NAME}.pid"
 
-    # Container WAN DHCP server
+    # WAN DHCP server
     wan_dhcp_server stop 2>/dev/null || true
 
-    # 2. Stop and remove Docker containers
+    # 2. Stop and remove any legacy Docker containers if present
     if command -v docker >/dev/null 2>&1; then
-        for name in "${CLIENT1_NAME}" "${CLIENT2_NAME}" "${SERVER_NAME}"; do
-            if container_exists "${name}"; then
-                docker rm -f "${name}" >/dev/null 2>&1 || true
-            fi
+        for name in "${CLIENT1_NAME}" "${CLIENT2_NAME}" "${SERVER_NAME}" "mcast-server" "mcast-client1" "mcast-client2"; do
+            docker rm -f "${name}" >/dev/null 2>&1 || true
         done
     fi
 
     # 3. Delete virtual interfaces
-    for v in veth-mserv veth-mc1 veth-mc2 veth-wan-ctl v-dut-wan-h v-dut-lan-h; do
+    for v in veth-mserv vpeer-mserv veth-mc1 vpeer-mc1 veth-mc2 vpeer-mc2 veth-wan-ctl vpeer-wan-ctl v-dut-wan-h v-dut-lan-h; do
         ip link del "${v}" 2>/dev/null || true
     done
 
     # 4. Delete network namespaces
-    for ns in "${WAN_NS}" "ns-dut"; do
-        if ns_exists "${ns}"; then
-            ip netns del "${ns}" 2>/dev/null || true
-        fi
+    for ns in "${CLIENT1_NAME}" "${CLIENT2_NAME}" "${SERVER_NAME}" "${WAN_NS}" "ns-dut"; do
+        netns_del "${ns}"
     done
 
     # 5. Delete test bridges before restoring physical NICs
