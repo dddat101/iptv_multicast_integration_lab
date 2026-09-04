@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # REAL IPTV MULTICAST TEST LAB - CLEANUP
-# Idempotently tears down containers, veths, netns, bridges, and background jobs
+# Idempotently tears down containers, veths, netns, bridges, standalone daemons,
+# and restores physical interfaces to UP state with DHCP.
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -11,22 +12,60 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
+usage() {
+    cat <<'USAGE'
+Usage:
+  sudo ./scripts/cleanup.sh [options]
+
+Options:
+  -r, --restore, --dhcp    Restore physical interfaces (WAN_IF, LAN_IF) to UP, re-enable NetworkManager,
+                           and trigger DHCP [Default]
+  -d, --down, --no-restore Keep physical interfaces DOWN and flushed (isolated test mode)
+  -h, --help               Show this help message
+USAGE
+}
+
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     require_root
     load_config
 
-    log_info "Initiating cleanup of IPTV Multicast Lab..."
+    local restore="${RESTORE_INTERFACES_ON_CLEANUP:-1}"
 
-    # 1. Stop capture and daemon processes
+    while (( $# > 0 )); do
+        case "$1" in
+            -r|--restore|--dhcp)    restore=1; shift ;;
+            -d|--down|--no-restore) restore=0; shift ;;
+            *)                      usage; exit 2 ;;
+        esac
+    done
+
+    log_info "Initiating cleanup of IPTV Multicast Lab (restore_interfaces=${restore})..."
+
+    # 1. Stop capture and streaming daemon processes (direct and container)
     if [[ -x "${SCRIPT_DIR}/capture.sh" ]]; then
         "${SCRIPT_DIR}/capture.sh" stop 2>/dev/null || true
     fi
 
+    # Direct host streamer
+    stop_pidfile "${STATE_DIR}/server_direct.pid"
+    pkill -f "udp://${MCAST_GROUP}:${MCAST_PORT}" 2>/dev/null || true
+
+    # Direct WAN DHCP server
+    direct_wan_dhcp_server stop 2>/dev/null || true
+
+    # Container daemons
     stop_pidfile "${STATE_DIR}/server.pid"
     stop_pidfile "${STATE_DIR}/client_1.pid"
     stop_pidfile "${STATE_DIR}/client_2.pid"
 
-    # Stop WAN DHCP server
+    # Container WAN DHCP server
     wan_dhcp_server stop 2>/dev/null || true
 
     # 2. Stop and remove Docker containers
@@ -50,16 +89,7 @@ main() {
         fi
     done
 
-    # 5. Detach physical interfaces and bring them down safely
-    for ifname in "${WAN_IF}" "${LAN_IF}"; do
-        if [[ -n "${ifname}" ]] && iface_exists_root "${ifname}"; then
-            ip link set dev "${ifname}" nomaster 2>/dev/null || true
-            ip addr flush dev "${ifname}" 2>/dev/null || true
-            ip link set dev "${ifname}" down 2>/dev/null || true
-        fi
-    done
-
-    # 6. Delete test bridges
+    # 5. Delete test bridges before restoring physical NICs
     for br in "${WAN_BRIDGE}" "${LAN_BRIDGE}"; do
         if bridge_exists "${br}"; then
             ip link set dev "${br}" down 2>/dev/null || true
@@ -67,8 +97,19 @@ main() {
         fi
     done
 
+    # 6. Restore physical interfaces to UP + DHCP (or keep them DOWN if requested)
+    for ifname in "${WAN_IF}" "${LAN_IF}"; do
+        if [[ -n "${ifname}" ]] && iface_exists_root "${ifname}"; then
+            if (( restore == 1 )); then
+                restore_physical_interface "${ifname}"
+            else
+                tear_down_physical_interface "${ifname}"
+            fi
+        fi
+    done
+
     # 7. Clean runtime state files
-    rm -f "${STATE_DIR}"/*.pid "${STATE_DIR}"/hostname-*.txt "${STATE_DIR}/topology_state.env" 2>/dev/null || true
+    rm -f "${STATE_DIR}"/*.pid "${STATE_DIR}"/*.state "${STATE_DIR}"/*.txt "${STATE_DIR}/topology_state.env" 2>/dev/null || true
 
     log_info "Cleanup completed successfully."
 }

@@ -398,3 +398,193 @@ namespace_ip() {
     local iface="${2:-eth0}"
     ip netns exec "${ns}" ip -4 -o addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
 }
+
+# ------------------------------------------------------------------------------
+# Direct Standalone WAN Server & DHCP Helpers (Host-level, no Docker bridge)
+# ------------------------------------------------------------------------------
+configure_direct_wan_interface() {
+    local iface="$1"
+    local cidr="$2"
+
+    require_root
+    assert_safe_test_if "${iface}"
+
+    # Detach iface if it is slaved to any bridge
+    if ip link show dev "${iface}" 2>/dev/null | grep -q "master"; then
+        log_info "Detaching ${iface} from bridge master..."
+        ip link set dev "${iface}" nomaster 2>/dev/null || true
+    fi
+
+    # NetworkManager unmanage
+    command -v nmcli >/dev/null 2>&1 && nmcli device set "${iface}" managed no 2>/dev/null || true
+
+    ip link set dev "${iface}" up
+
+    # Configure IP
+    if ! ip -4 addr show dev "${iface}" 2>/dev/null | grep -q "${cidr}"; then
+        ip addr flush dev "${iface}" 2>/dev/null || true
+        ip addr add "${cidr}" dev "${iface}"
+    fi
+
+    # Multicast route: Ensure multicast traffic goes out WAN_IF
+    ip route replace 224.0.0.0/4 dev "${iface}"
+
+    # Force IGMPv2 on physical interface if writable
+    if [[ -w "/proc/sys/net/ipv4/conf/${iface}/force_igmp_version" ]]; then
+        printf '2\n' > "/proc/sys/net/ipv4/conf/${iface}/force_igmp_version" 2>/dev/null || true
+    fi
+
+    log_info "Interface ${iface} configured for direct WAN IPTV streaming (${cidr})."
+}
+
+restore_physical_interface() {
+    local iface="$1"
+    require_root
+
+    [[ -n "${iface}" ]] || return 0
+    iface_exists_root "${iface}" || return 0
+
+    log_info "Restoring interface ${iface} to UP state with DHCP..."
+
+    # 1. Detach from bridge master if any
+    ip link set dev "${iface}" nomaster 2>/dev/null || true
+
+    # 2. Delete test multicast route
+    if ip route show 224.0.0.0/4 2>/dev/null | grep -Eq "dev[[:space:]]+${iface}([[:space:]]|$)"; then
+        ip route del 224.0.0.0/4 dev "${iface}" 2>/dev/null || true
+    fi
+
+    # 3. Flush any static lab IP
+    ip addr flush dev "${iface}" 2>/dev/null || true
+
+    # 4. Bring interface link UP
+    ip link set dev "${iface}" up
+
+    # 5. Hand over to NetworkManager and trigger auto-connect
+    if command -v nmcli >/dev/null 2>&1; then
+        nmcli device set "${iface}" managed yes 2>/dev/null || true
+        nmcli device set "${iface}" autoconnect yes 2>/dev/null || true
+        nmcli device connect "${iface}" >/dev/null 2>&1 || true
+    fi
+
+    # 6. Fallback DHCP if carrier is present
+    if ip link show dev "${iface}" 2>/dev/null | grep -q "LOWER_UP"; then
+        local got_ip=0
+        for (( i=0; i<4; i++ )); do
+            if ip -4 -o addr show dev "${iface}" 2>/dev/null | grep -q 'inet '; then
+                got_ip=1
+                break
+            fi
+            sleep 0.5
+        done
+
+        if (( got_ip == 0 )) && command -v dhclient >/dev/null 2>&1; then
+            log_info "Triggering dhclient for ${iface}..."
+            dhclient -4 -nw "${iface}" 2>/dev/null || true
+        fi
+    fi
+
+    local current_ip
+    current_ip="$(ip -4 -o addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | head -n1 || echo '')"
+    if [[ -n "${current_ip}" ]]; then
+        log_info "Interface ${iface} is UP with IP: ${current_ip}"
+    else
+        log_info "Interface ${iface} is UP [Managed]. Waiting for DHCP lease from network."
+    fi
+}
+
+tear_down_physical_interface() {
+    local iface="$1"
+    require_root
+
+    [[ -n "${iface}" ]] || return 0
+    iface_exists_root "${iface}" || return 0
+
+    if ip route show 224.0.0.0/4 2>/dev/null | grep -Eq "dev[[:space:]]+${iface}([[:space:]]|$)"; then
+        ip route del 224.0.0.0/4 dev "${iface}" 2>/dev/null || true
+    fi
+    if command -v dhclient >/dev/null 2>&1; then
+        dhclient -x "${iface}" 2>/dev/null || true
+    fi
+    ip link set dev "${iface}" nomaster 2>/dev/null || true
+    ip addr flush dev "${iface}" 2>/dev/null || true
+    ip link set dev "${iface}" down 2>/dev/null || true
+    command -v nmcli >/dev/null 2>&1 && nmcli device set "${iface}" managed yes 2>/dev/null || true
+    log_info "Interface ${iface} is DOWN and flushed."
+}
+
+cleanup_direct_wan_interface() {
+    local iface="$1"
+    local restore="${2:-${RESTORE_INTERFACES_ON_CLEANUP:-1}}"
+    require_root
+
+    if [[ -n "${iface}" ]] && iface_exists_root "${iface}"; then
+        if (( restore == 1 )); then
+            restore_physical_interface "${iface}"
+        else
+            tear_down_physical_interface "${iface}"
+        fi
+    fi
+}
+
+direct_wan_dhcp_server() {
+    local action="$1"
+    local iface="${2:-${WAN_IF}}"
+    local pidfile="${STATE_DIR}/dnsmasq-direct.pid"
+    local conffile="${STATE_DIR}/dnsmasq-direct.conf"
+    local leasefile="${STATE_DIR}/dnsmasq-direct.leases"
+    local logfile="${LOG_DIR}/dnsmasq-direct.log"
+
+    case "${action}" in
+        start)
+            require_root
+            require_cmd dnsmasq
+            stop_pidfile "${pidfile}"
+
+            cat >"${conffile}" <<EOF
+port=0
+no-resolv
+no-hosts
+bind-interfaces
+interface=${iface}
+dhcp-range=${WAN_DHCP_START},${WAN_DHCP_END},255.255.255.0,${WAN_DHCP_LEASE}
+dhcp-option=option:router,${SERVER_IP%/*}
+dhcp-option=option:dns-server,${SERVER_IP%/*}
+dhcp-authoritative
+dhcp-leasefile=${leasefile}
+log-facility=${logfile}
+log-dhcp
+EOF
+            if [[ -n "${DUT_WAN_MAC:-}" ]]; then
+                printf 'dhcp-host=%s,%s\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" >>"${conffile}"
+            fi
+
+            touch "${leasefile}"
+            chmod 0666 "${leasefile}" 2>/dev/null || true
+
+            dnsmasq --conf-file="${conffile}" --pid-file="${pidfile}"
+            log_info "Direct WAN DHCP Server (dnsmasq) started on ${iface} [PID $(cat "${pidfile}" 2>/dev/null || echo '?')]"
+            ;;
+
+        stop)
+            stop_pidfile "${pidfile}"
+            rm -f "${conffile}" 2>/dev/null || true
+            log_info "Direct WAN DHCP Server stopped."
+            ;;
+
+        status)
+            if is_pidfile_running "${pidfile}"; then
+                printf 'Direct WAN DHCP Server: RUNNING (PID %s on %s)\n' "$(cat "${pidfile}")" "${iface}"
+                if [[ -f "${leasefile}" && -s "${leasefile}" ]]; then
+                    printf '== Active Direct WAN DHCP Leases ==\n'
+                    cat "${leasefile}"
+                else
+                    printf '<No active direct WAN leases recorded yet>\n'
+                fi
+            else
+                printf 'Direct WAN DHCP Server: STOPPED\n'
+            fi
+            ;;
+    esac
+}
+

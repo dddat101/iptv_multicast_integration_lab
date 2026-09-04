@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # REAL IPTV MULTICAST TEST LAB - TOPOLOGY SETUP
-# Supports Physical DUT mode and Virtual Simulation mode (--virtual / --no-dut)
+# Supports Physical DUT mode, Virtual Simulation mode (--virtual),
+# WAN-only mode (--wan-only), and Server-only mode (--server-only).
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -32,9 +33,15 @@ Usage:
 Options:
   -p, --physical          Run in Physical DUT mode (requires dedicated USB adapters) [Default]
   -v, --virtual, --no-dut Run in Virtual Simulation mode (self-contained, no physical DUT required)
-  -s, --server-only       Deploy Media Server only (skip STB clients) and start streaming immediately
-  --no-stream             In server-only mode, do not auto-start streaming
+  -w, --wan-only          Deploy WAN side only (WAN bridge, WAN DHCP & Server; skips LAN_IF and clients)
+  -s, --server-only       Deploy Media Server only (skip STB client containers)
+  --no-stream             Do not auto-start streaming immediately after setup
   -h, --help              Show this help message
+
+Notes:
+  - If you only want to stream directly on WAN_IF with NO bridges/topology at all:
+    sudo ./scripts/start_wan_server.sh run
+    (or: sudo ./scripts/start_server.sh --direct run)
 USAGE
 }
 
@@ -55,12 +62,14 @@ main() {
     require_cmd nsenter
 
     SERVER_ONLY="${SERVER_ONLY:-0}"
+    local wan_only=0
     local auto_stream=1
 
     while (( $# > 0 )); do
         case "$1" in
             --virtual|-v|--no-dut) IS_VIRTUAL=1; shift ;;
             --physical|-p)         IS_VIRTUAL=0; shift ;;
+            --wan-only|-w)         wan_only=1; SERVER_ONLY=1; shift ;;
             --server-only|-s)      SERVER_ONLY=1; shift ;;
             --no-stream)           auto_stream=0; shift ;;
             -h|--help)             usage; exit 0 ;;
@@ -83,25 +92,33 @@ main() {
     # Physical interface safety checks
     if (( IS_VIRTUAL == 0 )); then
         assert_safe_test_if "${WAN_IF}"
-        assert_safe_test_if "${LAN_IF}"
-        [[ "${WAN_IF}" != "${LAN_IF}" ]] || die "WAN_IF and LAN_IF must differ."
+        if (( wan_only == 0 )); then
+            assert_safe_test_if "${LAN_IF}"
+            [[ "${WAN_IF}" != "${LAN_IF}" ]] || die "WAN_IF and LAN_IF must differ."
+        fi
     fi
 
     SETUP_ACTIVE=1
     trap 'rollback_setup $? ${LINENO}' ERR
 
     printf '==============================================================================\n'
-    printf '        REAL IPTV MULTICAST LAB - SETUP (VIRTUAL: %d)                         \n' "${IS_VIRTUAL}"
+    printf '        REAL IPTV MULTICAST LAB - SETUP (VIRTUAL: %d, WAN-ONLY: %d)          \n' "${IS_VIRTUAL}" "${wan_only}"
     printf '==============================================================================\n'
 
-    log_info "Creating L2 test bridges: ${WAN_BRIDGE} and ${LAN_BRIDGE}..."
+    log_info "Creating L2 test bridge: ${WAN_BRIDGE}..."
     bridge_create "${WAN_BRIDGE}"
-    bridge_create "${LAN_BRIDGE}"
+    if (( wan_only == 0 )); then
+        log_info "Creating L2 test bridge: ${LAN_BRIDGE}..."
+        bridge_create "${LAN_BRIDGE}"
+    fi
 
     if (( IS_VIRTUAL == 0 )); then
-        log_info "Attaching physical interfaces to bridges: ${WAN_IF} -> ${WAN_BRIDGE}, ${LAN_IF} -> ${LAN_BRIDGE}..."
+        log_info "Attaching physical interface ${WAN_IF} -> ${WAN_BRIDGE}..."
         attach_physical_to_bridge "${WAN_IF}" "${WAN_BRIDGE}"
-        attach_physical_to_bridge "${LAN_IF}" "${LAN_BRIDGE}"
+        if (( wan_only == 0 )); then
+            log_info "Attaching physical interface ${LAN_IF} -> ${LAN_BRIDGE}..."
+            attach_physical_to_bridge "${LAN_IF}" "${LAN_BRIDGE}"
+        fi
     fi
 
     log_info "Creating WAN control namespace: ${WAN_NS}..."
@@ -127,7 +144,7 @@ main() {
     start_idle_container "${SERVER_NAME}"
     attach_container_to_bridge "${SERVER_NAME}" "${WAN_BRIDGE}" veth-mserv vpeer-mserv "${SERVER_IP}" "${SERVER_GW}" "mcast-server"
 
-    if (( SERVER_ONLY == 0 )); then
+    if (( SERVER_ONLY == 0 && wan_only == 0 )); then
         log_info "Starting client 1 container: ${CLIENT1_NAME} (${CLIENT1_IP}, Hostname: '${CLIENT1_HOSTNAME}')..."
         start_idle_container "${CLIENT1_NAME}"
         attach_container_to_bridge "${CLIENT1_NAME}" "${LAN_BRIDGE}" veth-mc1 vpeer-mc1 "${CLIENT1_IP}" "${CLIENT1_GW}" "${CLIENT1_HOSTNAME}"
@@ -138,21 +155,22 @@ main() {
         attach_container_to_bridge "${CLIENT2_NAME}" "${LAN_BRIDGE}" veth-mc2 vpeer-mc2 "${CLIENT2_IP}" "${CLIENT2_GW}" "${CLIENT2_HOSTNAME}"
         force_container_igmp_version "${CLIENT2_NAME}" "${FORCE_IGMP_VERSION}"
     else
-        log_info "Server-only mode: STB client containers skipped."
+        log_info "STB client containers skipped (server_only=${SERVER_ONLY}, wan_only=${wan_only})."
     fi
 
-    if (( IS_VIRTUAL == 1 )); then
+    if (( IS_VIRTUAL == 1 && wan_only == 0 )); then
         setup_virtual_dut
     fi
 
-    if (( SERVER_ONLY == 1 && auto_stream == 1 )); then
+    if (( auto_stream == 1 )); then
         log_info "Auto-starting media server streaming on ${SERVER_NAME}..."
-        "${SCRIPT_DIR}/start_server.sh" start
+        "${SCRIPT_DIR}/start_server.sh" --container start
     fi
 
     cat >"${STATE_DIR}/topology_state.env" <<EOF
 IS_VIRTUAL='${IS_VIRTUAL}'
 SERVER_ONLY='${SERVER_ONLY}'
+WAN_ONLY='${wan_only}'
 WAN_BRIDGE='${WAN_BRIDGE}'
 LAN_BRIDGE='${LAN_BRIDGE}'
 WAN_IF='${WAN_IF}'
@@ -165,7 +183,7 @@ EOF
 
     SETUP_ACTIVE=0
     trap - ERR
-    log_info "Setup completed successfully (virtual=${IS_VIRTUAL}, server_only=${SERVER_ONLY})."
+    log_info "Setup completed successfully (virtual=${IS_VIRTUAL}, wan_only=${wan_only}, server_only=${SERVER_ONLY})."
 }
 
 main "$@"
