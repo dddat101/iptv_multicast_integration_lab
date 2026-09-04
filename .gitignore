@@ -1,0 +1,10 @@
+config.env
+captures/*
+!captures/.gitkeep
+logs/*
+!logs/.gitkeep
+state/*
+!state/.gitkeep
+media/*.ts
+media/*.mp4
+media/*.mkv
