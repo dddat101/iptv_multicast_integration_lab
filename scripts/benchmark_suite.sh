@@ -14,7 +14,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 usage() {
     cat <<'USAGE'
 Usage:
-  ./scripts/benchmark_suite.sh [all|quality|stability|scale|churn|stress|loss|querier|diagnostics|pcap]
+  sudo ./scripts/benchmark_suite.sh [all|quality|stability|scale|churn|stress|loss|querier|diagnostics|pcap]
 
 Benchmarks:
   all          Execute all benchmark tests and generate comprehensive report
@@ -172,9 +172,9 @@ run_all_benchmarks() {
 
     for (( i=0; i<total_count; i++ )); do
         case "${test_statuses[i]}" in
-            PASS)    (( passed_count++ )) ;;
-            SKIPPED) (( skipped_count++ )) ;;
-            *)       (( failed_count++ )) ;;
+            PASS)    (( passed_count += 1 )) ;;
+            SKIPPED) (( skipped_count += 1 )) ;;
+            *)       (( failed_count += 1 )) ;;
         esac
     done
 
@@ -245,6 +245,12 @@ run_all_benchmarks() {
 main() {
     load_config
     local suite="${1:-all}"
+
+    case "${suite}" in
+        all|quality|stability|scale|churn|stress|loss|querier)
+            require_root
+            ;;
+    esac
 
     case "${suite}" in
         all)

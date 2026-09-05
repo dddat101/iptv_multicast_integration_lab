@@ -12,6 +12,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 main() {
+    require_root
     load_config
 
     local group_prefix="${SCALE_GROUP_PREFIX:-239.100.1}"
@@ -36,6 +37,9 @@ main() {
     if netns_exists "${CLIENT1_NAME:-ns-stb1}"; then
         ip -n "${CLIENT1_NAME}" sysctl -w net.ipv4.igmp_max_memberships="${target_memberships}" >/dev/null 2>&1 || true
         if_ip="$(ip -n "${CLIENT1_NAME}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+        if [[ -z "${if_ip}" ]]; then
+            if_ip="$(cat "${STATE_DIR}/ip-${CLIENT1_NAME}.txt" 2>/dev/null || true)"
+        fi
         if [[ -n "${if_ip}" ]]; then
             log_info "Running scale join from namespace ${CLIENT1_NAME} (IP: ${if_ip})..."
             ip netns exec "${CLIENT1_NAME}" python3 "${SCRIPT_DIR}/../tools/igmp_client.py" \

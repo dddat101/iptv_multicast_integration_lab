@@ -121,7 +121,7 @@ def main() -> int:
             magic = struct.unpack("!I", data[:4])[0]
             if magic == MAGIC_HEADER and len(data) >= 32:
                 # 32-byte header: Magic(4B), GroupIdx(2B), Reserved(2B), GlobalSeq(8B), GroupSeq(8B), Timestamp(8B)
-                _, grp_idx, _, global_seq, seq, _ = struct.unpack("!IHHIQQ", data[:32])
+                _, grp_idx, _, global_seq, seq, _ = struct.unpack("!IHHQQQ", data[:32])
             else:
                 # Fallback simple 16-byte header: Sequence(8B), Timestamp(8B)
                 seq, _ = struct.unpack("!QQ", data[:16])

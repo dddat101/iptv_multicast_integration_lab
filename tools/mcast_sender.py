@@ -112,7 +112,7 @@ def main() -> int:
             g_seq = group_seq[grp_idx]
 
             # Header (32 bytes): Magic (4B), GroupIdx (2B), Reserved (2B), GlobalSeq (8B), GroupSeq (8B), Timestamp_ns (8B)
-            header = struct.pack("!IHHIQQ", MAGIC_HEADER, grp_idx, 0, global_seq, g_seq, time.time_ns())
+            header = struct.pack("!IHHQQQ", MAGIC_HEADER, grp_idx, 0, global_seq, g_seq, time.time_ns())
             packet = header + filler
 
             sock.sendto(packet, (grp, args.port))
