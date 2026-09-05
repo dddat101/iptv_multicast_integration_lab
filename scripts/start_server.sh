@@ -22,6 +22,11 @@ readonly LOG_FILE="${LOG_DIR}/server.log"
 readonly DIRECT_PID_FILE="${STATE_DIR}/server_direct.pid"
 readonly DIRECT_LOG_FILE="${LOG_DIR}/server_direct.log"
 readonly STATE_MODE_FILE="${STATE_DIR}/server_mode.txt"
+readonly STATE_IFACE_FILE="${STATE_DIR}/server_iface.txt"
+readonly STATE_IFACE_TYPE_FILE="${STATE_DIR}/server_iface_type.txt"
+
+TARGET_IFACE=""
+STREAM_LOCAL_IP=""
 
 usage() {
     cat <<'USAGE'
@@ -35,15 +40,27 @@ Commands:
   status          Show status of media streaming daemon
 
 Options:
+  -i, --interface, --iface <iface>
+                  Specify physical interface for streaming (e.g. eno1, enxd46e0e0c65e1).
+                  Auto-detects IP and avoids flushing shared host interfaces.
   -d, --direct, --standalone
-                  Run directly on physical WAN_IF (no topology needed)
+                  Run directly on host WAN_IF (no topology needed)
   -n, --netns, -c, --container
                   Run inside network namespace topology
+  -g, --group <ip>
+                  Override multicast destination IP (default: from config, e.g. 239.10.10.10)
+  -p, --port <port>
+                  Override UDP destination port (default: from config, e.g. 5000)
   -h, --help      Show this help message
 
 Examples:
-  # Standalone WAN IPTV Server (Zero Topology):
-  sudo ./scripts/start_server.sh --direct run
+  # Stream out corporate/lab interface eno1 (Automated Option 2):
+  sudo ./scripts/start_server.sh -i eno1 start
+  sudo ./scripts/start_server.sh -i eno1 run
+  sudo ./scripts/start_server.sh stop
+  sudo ./scripts/start_server.sh status
+
+  # Standalone Dedicated WAN IPTV Server (Zero Topology):
   sudo ./scripts/start_server.sh --direct start
   sudo ./scripts/start_server.sh stop
 
@@ -127,17 +144,107 @@ stop_background() {
 # ------------------------------------------------------------------------------
 # Direct Standalone WAN Mode Functions
 # ------------------------------------------------------------------------------
-run_direct_foreground() {
+setup_direct_streaming_iface() {
+    local iface="$1"
     require_root
-    check_media_asset
-    configure_direct_wan_interface "${WAN_IF}" "${SERVER_IP}"
 
-    if [[ "${ENABLE_WAN_DHCP:-0}" == "1" ]]; then
-        direct_wan_dhcp_server start "${WAN_IF}"
+    [[ -n "${iface}" ]] || die "Interface name cannot be empty."
+    iface_exists_root "${iface}" || die "Interface not found on host: ${iface}"
+
+    # Ensure interface is UP
+    ip link set dev "${iface}" up
+
+    # Determine if interface has an existing IPv4 address
+    local current_ip
+    current_ip="$(ip -4 -o addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+
+    local is_shared=0
+    if ip route show default 2>/dev/null | grep -Eq "dev[[:space:]]+${iface}([[:space:]]|$)"; then
+        is_shared=1
+    elif [[ -n "${current_ip}" && "${iface}" != "${WAN_IF}" ]]; then
+        is_shared=1
     fi
 
-    local local_ip="${SERVER_IP%/*}"
-    log_info "Streaming ${MCAST_GROUP}:${MCAST_PORT} directly on ${WAN_IF} (Foreground)..."
+    local stream_local_ip=""
+
+    mkdir -p "${STATE_DIR}" "${LOG_DIR}"
+
+    if (( is_shared == 1 )); then
+        # Shared active host interface (e.g. eno1 on corporate/lab network)
+        [[ -n "${current_ip}" ]] || die "Shared interface ${iface} does not have an active IPv4 address."
+        stream_local_ip="${current_ip}"
+
+        log_info "Using active host interface '${iface}' (IP: ${stream_local_ip}) - preserving existing configuration."
+        printf 'shared\n' > "${STATE_IFACE_TYPE_FILE}"
+        printf '%s\n' "${iface}" > "${STATE_IFACE_FILE}"
+
+        # Ensure multicast route points out this interface
+        ip route replace 224.0.0.0/4 dev "${iface}"
+    else
+        # Dedicated test interface (e.g. enxd46e0e0c65e1)
+        log_info "Configuring dedicated test interface '${iface}' with IP ${SERVER_IP}..."
+        printf 'dedicated\n' > "${STATE_IFACE_TYPE_FILE}"
+        printf '%s\n' "${iface}" > "${STATE_IFACE_FILE}"
+
+        configure_direct_wan_interface "${iface}" "${SERVER_IP}"
+
+        if [[ "${ENABLE_WAN_DHCP:-0}" == "1" ]]; then
+            direct_wan_dhcp_server start "${iface}"
+        fi
+        stream_local_ip="${SERVER_IP%/*}"
+    fi
+
+    # Set IGMPv2 on the interface if writable
+    if [[ -w "/proc/sys/net/ipv4/conf/${iface}/force_igmp_version" ]]; then
+        printf '2\n' > "/proc/sys/net/ipv4/conf/${iface}/force_igmp_version" 2>/dev/null || true
+    fi
+
+    # MTU detection and packet size adaptation to eliminate fragmentation drops
+    local iface_mtu
+    iface_mtu="$(cat "/sys/class/net/${iface}/mtu" 2>/dev/null || echo 1500)"
+    if (( iface_mtu < 1344 )); then
+        log_warn "Interface '${iface}' MTU is ${iface_mtu} (< 1344)."
+        log_warn "Auto-adjusting MPEG-TS packet size to 1128B (6 TS packets) to prevent IP fragmentation packet loss."
+        MPEGTS_PKT_SIZE=1128
+        log_info "Tip: For standard 1316B IPTV packets, run 'sudo ip link set dev ${iface} mtu 1500'."
+    fi
+
+    STREAM_LOCAL_IP="${stream_local_ip}"
+}
+
+cleanup_direct_streaming_iface() {
+    local iface=""
+    local iface_type="dedicated"
+
+    if [[ -f "${STATE_IFACE_FILE}" ]]; then
+        iface="$(cat "${STATE_IFACE_FILE}" 2>/dev/null || true)"
+    fi
+    if [[ -f "${STATE_IFACE_TYPE_FILE}" ]]; then
+        iface_type="$(cat "${STATE_IFACE_TYPE_FILE}" 2>/dev/null || true)"
+    fi
+    iface="${iface:-${TARGET_IFACE:-${WAN_IF}}}"
+
+    if [[ "${iface_type}" == "dedicated" ]]; then
+        if [[ "${ENABLE_WAN_DHCP:-0}" == "1" ]]; then
+            direct_wan_dhcp_server stop 2>/dev/null || true
+        fi
+        cleanup_direct_wan_interface "${iface}"
+    else
+        log_info "Preserved configuration on shared host interface ${iface}."
+    fi
+
+    rm -f "${STATE_IFACE_FILE}" "${STATE_IFACE_TYPE_FILE}" "${STATE_MODE_FILE}" 2>/dev/null || true
+}
+
+run_direct_foreground() {
+    local target_iface="${TARGET_IFACE:-${WAN_IF}}"
+    require_root
+    check_media_asset
+
+    setup_direct_streaming_iface "${target_iface}"
+    local local_ip="${STREAM_LOCAL_IP}"
+
+    log_info "Streaming ${MCAST_GROUP}:${MCAST_PORT} directly on ${target_iface} (localaddr=${local_ip}) [Foreground]..."
     log_info "Press Ctrl+C to terminate streaming."
 
     if command -v ffmpeg >/dev/null 2>&1; then
@@ -150,22 +257,19 @@ run_direct_foreground() {
 }
 
 start_direct_background() {
+    local target_iface="${TARGET_IFACE:-${WAN_IF}}"
     require_root
     check_media_asset
 
     if is_pidfile_running "${DIRECT_PID_FILE}"; then
-        log_warn "Direct media server already streaming on ${WAN_IF} (PID $(cat "${DIRECT_PID_FILE}"))."
+        log_warn "Direct media server already streaming (PID $(cat "${DIRECT_PID_FILE}"))."
         return 0
     fi
 
-    configure_direct_wan_interface "${WAN_IF}" "${SERVER_IP}"
+    setup_direct_streaming_iface "${target_iface}"
+    local local_ip="${STREAM_LOCAL_IP}"
 
-    if [[ "${ENABLE_WAN_DHCP:-0}" == "1" ]]; then
-        direct_wan_dhcp_server start "${WAN_IF}"
-    fi
-
-    log_info "Starting direct background media stream ${MCAST_GROUP}:${MCAST_PORT} on ${WAN_IF}..."
-    local local_ip="${SERVER_IP%/*}"
+    log_info "Starting direct background media stream ${MCAST_GROUP}:${MCAST_PORT} on ${target_iface} (localaddr=${local_ip})..."
     local pid
 
     if command -v ffmpeg >/dev/null 2>&1; then
@@ -189,7 +293,7 @@ start_direct_background() {
         return 1
     fi
 
-    log_info "Direct media server streaming started on ${WAN_IF} [PID ${pid}]. Logs: ${DIRECT_LOG_FILE}"
+    log_info "Direct media server streaming started on ${target_iface} [PID ${pid}]. Logs: ${DIRECT_LOG_FILE}"
 }
 
 stop_direct_background() {
@@ -206,13 +310,8 @@ stop_direct_background() {
     # Terminate any stray host ffmpeg streaming to MCAST_GROUP:MCAST_PORT
     pkill -f "udp://${MCAST_GROUP}:${MCAST_PORT}" 2>/dev/null || true
 
-    if [[ "${ENABLE_WAN_DHCP:-0}" == "1" ]]; then
-        direct_wan_dhcp_server stop 2>/dev/null || true
-    fi
-
-    cleanup_direct_wan_interface "${WAN_IF}"
-    rm -f "${STATE_MODE_FILE}" 2>/dev/null || true
-    log_info "Direct media server streaming and WAN interface stopped."
+    cleanup_direct_streaming_iface
+    log_info "Direct media server streaming stopped."
 }
 
 stop_any() {
@@ -226,7 +325,7 @@ stop_any() {
         stopped=1
     fi
     if (( stopped == 0 )); then
-        rm -f "${DIRECT_PID_FILE}" "${PID_FILE}" "${STATE_MODE_FILE}" 2>/dev/null || true
+        rm -f "${DIRECT_PID_FILE}" "${PID_FILE}" "${STATE_MODE_FILE}" "${STATE_IFACE_FILE}" "${STATE_IFACE_TYPE_FILE}" 2>/dev/null || true
         log_info "Media server streaming is already stopped."
     fi
 }
@@ -237,26 +336,39 @@ show_status() {
 
     if is_pidfile_running "${DIRECT_PID_FILE}"; then
         running=1
-        printf 'Mode:    DIRECT HOST (Zero Topology on %s)\n' "${WAN_IF}"
-        printf 'Status:  STREAMING (PID %s)\n' "$(cat "${DIRECT_PID_FILE}")"
-        printf 'Stream:  udp://%s:%s (pkt_size=%s, ttl=%s, localaddr=%s)\n' \
-            "${MCAST_GROUP}" "${MCAST_PORT}" "${MPEGTS_PKT_SIZE}" "${MCAST_TTL}" "${SERVER_IP%/*}"
-        printf 'Asset:   %s\n' "${MEDIA_FILE}"
-        printf 'WAN IP:  %s\n' "$(ip -4 -o addr show dev "${WAN_IF}" 2>/dev/null | awk '{print $4}' | head -n1 || echo '<none>')"
-        direct_wan_dhcp_server status || true
+        local active_iface="${WAN_IF}"
+        local active_type="dedicated"
+        if [[ -f "${STATE_IFACE_FILE}" ]]; then
+            active_iface="$(cat "${STATE_IFACE_FILE}" 2>/dev/null || echo "${WAN_IF}")"
+        fi
+        if [[ -f "${STATE_IFACE_TYPE_FILE}" ]]; then
+            active_type="$(cat "${STATE_IFACE_TYPE_FILE}" 2>/dev/null || echo "dedicated")"
+        fi
+        local ip_now
+        ip_now="$(ip -4 -o addr show dev "${active_iface}" 2>/dev/null | awk '{print $4}' | head -n1 || echo '<none>')"
+
+        printf 'Mode:      DIRECT HOST (%s on %s)\n' "${active_type}" "${active_iface}"
+        printf 'Status:    STREAMING (PID %s)\n' "$(cat "${DIRECT_PID_FILE}")"
+        printf 'Stream:    udp://%s:%s (pkt_size=%s, ttl=%s, localaddr=%s)\n' \
+            "${MCAST_GROUP}" "${MCAST_PORT}" "${MPEGTS_PKT_SIZE}" "${MCAST_TTL}" "${ip_now%/*}"
+        printf 'Asset:     %s\n' "${MEDIA_FILE}"
+        printf 'Iface IP:  %s\n' "${ip_now}"
+        if [[ "${active_type}" == "dedicated" ]]; then
+            direct_wan_dhcp_server status || true
+        fi
     fi
 
     if is_pidfile_running "${PID_FILE}"; then
         running=1
-        printf 'Mode:    NAMESPACE (%s)\n' "${SERVER_NAME}"
-        printf 'Status:  STREAMING (PID %s)\n' "$(cat "${PID_FILE}")"
-        printf 'Stream:  udp://%s:%s (pkt_size=%s, ttl=%s)\n' \
+        printf 'Mode:      NAMESPACE (%s)\n' "${SERVER_NAME}"
+        printf 'Status:    STREAMING (PID %s)\n' "$(cat "${PID_FILE}")"
+        printf 'Stream:    udp://%s:%s (pkt_size=%s, ttl=%s)\n' \
             "${MCAST_GROUP}" "${MCAST_PORT}" "${MPEGTS_PKT_SIZE}" "${MCAST_TTL}"
-        printf 'Asset:   %s\n' "${MEDIA_FILE}"
+        printf 'Asset:     %s\n' "${MEDIA_FILE}"
     fi
 
     if (( running == 0 )); then
-        printf 'Status:  STOPPED\n'
+        printf 'Status:    STOPPED\n'
     fi
 }
 
@@ -267,11 +379,45 @@ main() {
 
     while (( $# > 0 )); do
         case "$1" in
-            -d|--direct|--standalone)    mode="direct"; shift ;;
-            -n|--netns|-c|--container)   mode="netns"; shift ;;
-            run|start|stop|status)      cmd="$1"; shift ;;
-            -h|--help)                  usage; exit 0 ;;
-            *)                          usage; exit 2 ;;
+            -i|--interface|--iface)
+                shift
+                [[ $# -gt 0 ]] || die "Missing interface argument for $1"
+                TARGET_IFACE="$1"
+                mode="direct"
+                shift
+                ;;
+            -d|--direct|--standalone)
+                mode="direct"
+                shift
+                ;;
+            -n|--netns|-c|--container)
+                mode="netns"
+                shift
+                ;;
+            -g|--group)
+                shift
+                [[ $# -gt 0 ]] || die "Missing group argument for $1"
+                MCAST_GROUP="$1"
+                shift
+                ;;
+            -p|--port)
+                shift
+                [[ $# -gt 0 ]] || die "Missing port argument for $1"
+                MCAST_PORT="$1"
+                shift
+                ;;
+            run|start|stop|status)
+                cmd="$1"
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                usage
+                exit 2
+                ;;
         esac
     done
 
@@ -305,14 +451,14 @@ main() {
         elif netns_exists "${SERVER_NAME}"; then
             mode="netns"
         else
+            local default_iface="${TARGET_IFACE:-${WAN_IF}}"
             if (( EUID == 0 )); then
-                log_info "No namespace '${SERVER_NAME}' detected. Defaulting to direct WAN host mode on ${WAN_IF}."
+                log_info "No namespace '${SERVER_NAME}' detected. Defaulting to direct host mode on ${default_iface}."
                 mode="direct"
             else
                 die "Namespace '${SERVER_NAME}' is not running.
-To stream directly on physical interface '${WAN_IF}' without namespaces or topology:
-  sudo ./scripts/start_server.sh --direct ${cmd}
-  (or: sudo ./scripts/start_wan_server.sh ${cmd})
+To stream directly on physical interface '${default_iface}' without namespaces or topology:
+  sudo ./scripts/start_server.sh -i ${default_iface} ${cmd}
 To run with namespace topology:
   sudo ./scripts/setup.sh --wan-only (Deploy WAN side only)
   sudo ./scripts/setup.sh            (Deploy full lab topology)"

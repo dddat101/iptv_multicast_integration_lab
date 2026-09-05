@@ -46,26 +46,37 @@ resolve_pcap() {
 
 calculate_latency() {
     local pcap="$1"
-    local group="${2:-${MCAST_GROUP}}"
+    local group="${2:-}"
+
+    if [[ -z "${group}" ]]; then
+        # Check active joined groups in PCAP with both Join and Data traffic
+        group="$((tshark -r "${pcap}" -Y "igmp.type == 0x16" -T fields -e igmp.maddr 2>/dev/null || true) | head -n1)"
+        group="${group:-${MCAST_GROUP}}"
+    fi
 
     local t_join t_data latency_sec latency_ms
 
-    t_join="$((tshark -r "${pcap}" -Y "igmp.type == 0x16 && igmp.maddr == ${group}" -T fields -e frame.time_epoch 2>/dev/null || true) | head -n1)"
-    t_data="$((tshark -r "${pcap}" -Y "ip.dst == ${group} && udp.dstport == ${MCAST_PORT}" -T fields -e frame.time_epoch 2>/dev/null || true) | awk -v j="${t_join}" 'j == "" || $1 >= j {print $1; exit}')"
-
-    if [[ -z "${t_join}" ]]; then
-        printf 'ERROR: No IGMP Join found for group %s\n' "${group}" >&2
-        return 1
-    fi
+    printf 'Analyzing PCAP for IGMP Join-to-first-data latency for group %s, command: tshark -r %s -Y "ip.dst == %s && udp.dstport == %s"\n' "${group}" "${pcap}" "${group}" "${MCAST_PORT}"
+    t_data="$((tshark -r "${pcap}" -Y "ip.dst == ${group} && udp.dstport == ${MCAST_PORT}" -T fields -e frame.time_epoch 2>/dev/null || true) | head -n1)"
 
     if [[ -z "${t_data}" ]]; then
         printf 'ERROR: No Multicast UDP data packets found for group %s\n' "${group}" >&2
         return 1
     fi
 
+    # Find the most recent IGMP Join that arrived before or at the first data packet
+    printf 'Analyzing PCAP for IGMP Join-to-first-data latency for group %s, command: tshark -r %s -Y "igmp.type == 0x16 && igmp.maddr == %s"\n' "${group}" "${pcap}" "${group}"
+    t_join="$((tshark -r "${pcap}" -Y "igmp.type == 0x16 && igmp.maddr == ${group}" -T fields -e frame.time_epoch 2>/dev/null || true) | awk -v d="${t_data}" '$1 <= d {last=$1} END {if (last) print last}')"
+
+    if [[ -z "${t_join}" ]]; then
+        printf 'ERROR: No IGMP Join found prior to first data for group %s\n' "${group}" >&2
+        return 1
+    fi
+
     latency_sec="$(awk -v d="${t_data}" -v j="${t_join}" 'BEGIN { printf "%.6f", d - j }')"
     latency_ms="$(awk -v d="${t_data}" -v j="${t_join}" 'BEGIN { printf "%.3f", (d - j) * 1000 }')"
 
+    printf 'group=%s\n' "${group}"
     printf 't_join_epoch=%s\n' "${t_join}"
     printf 't_first_data_epoch=%s\n' "${t_data}"
     printf 'join_to_first_data_sec=%s\n' "${latency_sec}"
@@ -151,17 +162,28 @@ verify_full() {
 main() {
     load_config
     local mode="${1:-full}"
-    local pcap_arg="${2:-}"
-    local pcap_file
+    local arg2="${2:-}"
+    local arg3="${3:-}"
+    local pcap_file=""
+    local group=""
 
-    pcap_file="$(resolve_pcap "${pcap_arg}")"
+    if [[ -f "${arg2}" ]]; then
+        pcap_file="${arg2}"
+        group="${arg3}"
+    elif [[ "${arg2}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        group="${arg2}"
+        pcap_file="$(resolve_pcap "${arg3}")"
+    else
+        pcap_file="$(resolve_pcap "${arg2}")"
+        group="${arg3}"
+    fi
 
     case "${mode}" in
         summary|full|compliance)
-            verify_full "${pcap_file}"
+            verify_full "${pcap_file}" "${group}"
             ;;
         latency)
-            calculate_latency "${pcap_file}"
+            calculate_latency "${pcap_file}" "${group}"
             ;;
         *)
             usage

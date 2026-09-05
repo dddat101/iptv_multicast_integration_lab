@@ -13,7 +13,7 @@ Unlike synthetic socket tests, this lab uses **real application/protocol stacks*
 
 | Mode | Command | Bridges | Namespaces | Physical NICs | Typical Use Case |
 |---|---|---|---|---|---|
-| **Standalone WAN Server** *(Zero Topology)* | `sudo ./scripts/start_wan_server.sh run` | None | None | `WAN_IF` only | Linux PC acts as IPTV headend directly on Router WAN port; clients test on Router LAN/Wi-Fi |
+| **Standalone WAN Server** *(Zero Topology)* | `sudo ./scripts/start_server.sh -i <iface> start`<br>*(or `start_wan_server.sh`)* | None | None | `WAN_IF` or `eno1` | Linux PC acts as IPTV headend directly on Router WAN port or lab network (`eno1`); clients test on Router LAN/Wi-Fi |
 | **WAN-Only Namespace** | `sudo ./scripts/setup.sh --wan-only` | `br-test-wan` | `ns-server`, `ns-wan` | `WAN_IF` only | Isolated IPTV headend with network namespace & WAN DHCP |
 | **Physical Server-Only** | `sudo ./scripts/setup.sh -p -s` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-wan` | `WAN_IF` & `LAN_IF` | Router in the middle; external physical/Windows client on LAN bridge |
 | **Full Physical DUT** | `sudo ./scripts/setup.sh --physical` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-stb1,2`, `ns-wan` | `WAN_IF` & `LAN_IF` | Full automated physical qualification test with internal STB namespaces |
@@ -217,22 +217,29 @@ LAN_IF="enx00e04c88293c"   # Connected to DUT LAN port (only needed if using LAN
 ### Step 3: Choose Your Running Mode
 
 #### Mode 1: Standalone WAN IPTV Server (Zero Topology - Recommended for Router WAN Testing)
-Use this when you only have **one cable** connecting the Linux PC's `WAN_IF` to the router's WAN port, and test clients (Windows PC, physical STBs, phones) are connected directly to the router's LAN ports or Wi-Fi:
+Use this when you want to stream IPTV directly out of a specific physical interface without creating virtual bridges or network namespaces:
 
 ```bash
-# Foreground interactive streaming (displays live FFmpeg bitrate/fps stats):
-sudo ./scripts/start_wan_server.sh run
-# Or: sudo ./scripts/start_server.sh --direct run
+# 1. Stream out a specific interface (e.g. eno1 on corporate/lab network, or enxd46e0e0c65e1):
+sudo ./scripts/start_server.sh -i eno1 start
+./scripts/start_server.sh status
+sudo ./scripts/start_server.sh stop
 
-# Or background daemon mode:
-sudo ./scripts/start_wan_server.sh start
-./scripts/start_wan_server.sh status
-sudo ./scripts/start_wan_server.sh stop
+# 2. Interactive foreground streaming (live FFmpeg bitrate/fps display):
+sudo ./scripts/start_server.sh -i eno1 run
+
+# 3. Stream with custom multicast group and port:
+sudo ./scripts/start_server.sh -i eno1 -g 239.100.1.1 -p 5000 start
+
+# 4. Standard dedicated WAN adapter mode (from config.env WAN_IF):
+sudo ./scripts/start_server.sh --direct start
+# Or via alias: sudo ./scripts/start_wan_server.sh start
 ```
-* **No test bridges or namespaces needed.**
-* Automatically unmanages `WAN_IF` from NetworkManager and assigns `10.10.0.2/24`.
-* Automatically runs an isolated WAN DHCP server (`dnsmasq`) bound strictly to `WAN_IF` (`port=0`, no DNS listener conflict) to provide an IP to the router's WAN port.
-* Directly streams FFmpeg MPEG-TS out `WAN_IF`.
+
+* **Smart Interface Handling**:
+  - **Shared Host Interface (e.g. `eno1`)**: When pointing to an interface carrying existing IPs or default routes, the script **preserves IP configuration**, avoids flushing, disables conflicting DHCP listeners, sets `224.0.0.0/4` multicast routing to the interface, and cleanly restores state on stop.
+  - **Dedicated Test Interface (e.g. `enxd46e0e0c65e1`)**: Automatically unmanages from NetworkManager, assigns `10.10.0.2/24`, and launches an isolated WAN DHCP server (`dnsmasq`) for the router's WAN port.
+* **Automatic MTU Adaptation**: If the interface MTU is $< 1344$ (e.g. MTU 1280), the script automatically adjusts the MPEG-TS payload size from 1316 bytes (7 TS packets) to 1128 bytes (6 TS packets) to eliminate IP fragmentation packet loss.
 
 #### Mode 2: WAN-Only Namespace Topology Mode
 Use this if you prefer network namespace isolation for the media server, but only have `WAN_IF` connected (no `LAN_IF` or LAN bridge):
@@ -507,6 +514,24 @@ ip.dst == 239.10.10.10 && udp.dstport == 5000
   ./scripts/generate_media.sh
   ```
 
+### 5. Client video is pixelated/corrupted (`Packet corrupt`, `PES packet size mismatch`, macroblocking)
+* **Root Cause: MTU Mismatch & IP Fragmentation**:
+  If the transmitting interface (e.g. `eno1`) has MTU $< 1344$ (e.g. `mtu 1280`), standard 1316-byte MPEG-TS packets ($1344\text{ bytes with IP/UDP headers}$) get fragmented into 2 IP packets. Switches or router hardware accelerators often drop fragment #2 (which lacks UDP headers), destroying packet continuity.
+* **Resolution**:
+  1. Set the transmitter interface MTU to 1500:
+     ```bash
+     sudo ip link set dev eno1 mtu 1500
+     ```
+     *(Alternatively, `start_server.sh` automatically adapts `pkt_size=1128` (6 TS packets) when interface MTU is $< 1344$ to prevent fragmentation).*
+  2. Increase client UDP receive socket buffer to 4MB in `ffplay`:
+     ```bash
+     ffplay "udp://239.10.10.10:5000?localaddr=192.168.1.105&buffer_size=4194304&overrun_nonfatal=1&fifo_size=500000"
+     ```
+  3. If using VLC, set **Network caching** to `1000 ms` (**Tools** $\to$ **Preferences** $\to$ **All** $\to$ **Input / Codecs**).
+
+### 6. Brief `non-existing PPS 0 referenced` / `no frame!` warnings when starting FFplay
+* **Expected Live Stream Behavior**: In live broadcast multicast, video is encoded in periodic GOP cycles (e.g. 2-second I-frames). When a client joins mid-stream, it may receive P/B frames before the first keyframe (SPS/PPS parameter sets). Once the next I-frame arrives (within 1–2s), video renders cleanly and warnings stop.
+
 ---
 
 ## Multicast Benchmark & RFC Verification Suite
@@ -526,7 +551,7 @@ This lab incorporates specialized benchmark tools and RFC compliance test harnes
 | [`./scripts/test_packet_loss.sh`](scripts/test_packet_loss.sh) | **Packet Loss** | Generates sequence-tracked packets across multiple groups; verifies loss ratio |
 | [`./scripts/test_foreign_querier.sh`](scripts/test_foreign_querier.sh) | **Querier Election** | Injects foreign LAN querier frames to evaluate querier election and port behavior |
 | [`./scripts/dut_collector.sh`](scripts/dut_collector.sh) | **Diagnostics** | SSH/UART diagnostic collector for router multicast routes, snooping tables, and kernel status |
-| [`./scripts/verify_capture.sh compliance`](scripts/verify_capture.sh) | **Traffic Audit** | Analyzes PCAP captures for ToS/DSCP, DF bit, join latency, and source MAC/IP |
+| [`./scripts/verify_capture.sh`](scripts/verify_capture.sh) | **Traffic Audit & Latency** | Full PCAP audit for ToS/DF, join latency (`./scripts/verify_capture.sh latency [group]`), and headers |
 
 ### 2. Standalone Protocol Tools (`tools/`)
 
