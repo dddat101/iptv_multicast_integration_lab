@@ -101,6 +101,21 @@ ensure_runtime_dirs() {
     chmod -R a+rw "${CAPTURE_DIR}" "${LOG_DIR}" "${STATE_DIR}" 2>/dev/null || true
 }
 
+clean_logs() {
+    ensure_runtime_dirs
+    log_info "Cleaning log files in ${LOG_DIR}..."
+    find "${LOG_DIR}" -mindepth 1 ! -name '.gitkeep' -delete 2>/dev/null || true
+    log_info "Logs directory cleaned."
+}
+
+clean_captures() {
+    ensure_runtime_dirs
+    log_info "Cleaning PCAP capture files in ${CAPTURE_DIR}..."
+    find "${CAPTURE_DIR}" -mindepth 1 ! -name '.gitkeep' -delete 2>/dev/null || true
+    rm -f "${STATE_DIR}/latest_capture.txt" 2>/dev/null || true
+    log_info "Captures directory cleaned."
+}
+
 is_pidfile_running() {
     local pidfile="$1"
     local pid=""

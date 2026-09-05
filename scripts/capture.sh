@@ -21,6 +21,7 @@ Usage:
   sudo ./scripts/capture.sh start [lan|wan|all] [bpf_filter]
   sudo ./scripts/capture.sh stop
   sudo ./scripts/capture.sh status
+  ./scripts/capture.sh clean
 USAGE
 }
 
@@ -161,6 +162,12 @@ main() {
             ;;
         status)
             show_status
+            ;;
+        clean)
+            if is_pidfile_running "${PID_FILE}"; then
+                stop_capture
+            fi
+            clean_captures
             ;;
         *)
             usage

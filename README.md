@@ -409,6 +409,24 @@ sudo ./scripts/cleanup.sh
 * Automatically detaches physical interfaces from test bridges and flushes test IPs (`10.10.0.x`).
 * Brings physical links `UP`, restores NetworkManager management, and triggers DHCP to acquire IPs from whatever network they are connected to.
 
+#### Clean Logs, Captures, and Artifacts
+
+```bash
+# Purge logs/ without tearing down lab topology:
+./scripts/cleanup.sh logs
+
+# Purge captures/ without tearing down lab topology:
+./scripts/cleanup.sh captures
+# or:
+./scripts/capture.sh clean
+
+# Purge both logs/ and captures/ without tearing down lab topology:
+./scripts/cleanup.sh data
+
+# Full teardown AND purge state, logs, and captures:
+sudo ./scripts/cleanup.sh --all   # or: sudo ./scripts/cleanup.sh -a
+```
+
 If you prefer to keep interfaces isolated and administratively `DOWN`:
 ```bash
 sudo ./scripts/cleanup.sh --down

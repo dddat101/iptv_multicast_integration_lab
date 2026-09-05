@@ -16,12 +16,23 @@ usage() {
     cat <<'USAGE'
 Usage:
   sudo ./scripts/cleanup.sh [options]
+  ./scripts/cleanup.sh logs
+  ./scripts/cleanup.sh captures
+  ./scripts/cleanup.sh data
 
 Options:
   -r, --restore, --dhcp    Restore physical interfaces (WAN_IF, LAN_IF) to UP, re-enable NetworkManager,
                            and trigger DHCP [Default]
   -d, --down, --no-restore Keep physical interfaces DOWN and flushed (isolated test mode)
+  --logs                   Purge all test logs in logs/
+  --captures               Purge all PCAP captures in captures/
+  -a, --all                Teardown topology and purge state, logs, and captures
   -h, --help               Show this help message
+
+Subcommands (Non-destructive to running topology):
+  logs                     Purge logs/ without tearing down lab
+  captures                 Purge captures/ without tearing down lab
+  data                     Purge both logs/ and captures/ without tearing down lab
 USAGE
 }
 
@@ -33,15 +44,38 @@ main() {
         fi
     done
 
-    require_root
     load_config
 
+    # Non-destructive subcommands
+    case "${1:-}" in
+        logs)
+            clean_logs
+            exit 0
+            ;;
+        captures)
+            clean_captures
+            exit 0
+            ;;
+        data)
+            clean_logs
+            clean_captures
+            exit 0
+            ;;
+    esac
+
+    require_root
+
     local restore="${RESTORE_INTERFACES_ON_CLEANUP:-1}"
+    local clean_logs_flag=0
+    local clean_captures_flag=0
 
     while (( $# > 0 )); do
         case "$1" in
             -r|--restore|--dhcp)    restore=1; shift ;;
             -d|--down|--no-restore) restore=0; shift ;;
+            --logs)                 clean_logs_flag=1; shift ;;
+            --captures)             clean_captures_flag=1; shift ;;
+            -a|--all)               clean_logs_flag=1; clean_captures_flag=1; shift ;;
             *)                      usage; exit 2 ;;
         esac
     done
@@ -121,6 +155,13 @@ main() {
 
     # 7. Clean runtime state files
     rm -f "${STATE_DIR}"/*.pid "${STATE_DIR}"/*.state "${STATE_DIR}"/*.txt "${STATE_DIR}/topology_state.env" 2>/dev/null || true
+
+    if (( clean_logs_flag == 1 )); then
+        clean_logs
+    fi
+    if (( clean_captures_flag == 1 )); then
+        clean_captures
+    fi
 
     log_info "Cleanup completed successfully."
 }
