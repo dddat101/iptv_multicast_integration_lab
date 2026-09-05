@@ -26,7 +26,7 @@ Options:
   --churn-interval <ms>  Interval between join/leave in milliseconds [Default: 100]
   --soak-duration <sec>  Duration for multi-client zapping soak [Default: 20]
   --groups <range>       Channels for zapping soak [Default: 239.100.1.1-8]
-  --group <ip>           Channel for fast-leave isolation test [Default: 239.10.10.10]
+  --group <ip>           Channel for fast-leave isolation test [Default: 239.100.1.1]
   -h, --help             Show this help message
 
 Examples:
@@ -44,7 +44,7 @@ cleanup_stability() {
 }
 
 run_fast_leave_isolation() {
-    local group="${1:-${MCAST_GROUP:-239.10.10.10}}"
+    local group="${1:-${STABILITY_GROUP:-239.100.1.1}}"
     local churn_cycles="${2:-20}"
     local churn_interval="${3:-100}"
     local rate=1000
@@ -321,7 +321,7 @@ main() {
     local churn_interval=100
     local soak_duration=20
     local zap_groups="239.100.1.1-8"
-    local single_group="${MCAST_GROUP:-239.10.10.10}"
+    local single_group="${STABILITY_GROUP:-239.100.1.1}"
 
     while (( $# > 0 )); do
         case "$1" in

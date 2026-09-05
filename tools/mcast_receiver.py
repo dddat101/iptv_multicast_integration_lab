@@ -115,17 +115,16 @@ def main() -> int:
             except socket.timeout:
                 continue
 
-            if len(data) < 16:
+            if len(data) < 32:
                 continue
 
             magic = struct.unpack("!I", data[:4])[0]
-            if magic == MAGIC_HEADER and len(data) >= 32:
-                # 32-byte header: Magic(4B), GroupIdx(2B), Reserved(2B), GlobalSeq(8B), GroupSeq(8B), Timestamp(8B)
-                _, grp_idx, _, global_seq, seq, _ = struct.unpack("!IHHQQQ", data[:32])
-            else:
-                # Fallback simple 16-byte header: Sequence(8B), Timestamp(8B)
-                seq, _ = struct.unpack("!QQ", data[:16])
-                grp_idx = 0
+            if magic != MAGIC_HEADER:
+                # Discard non-benchmark traffic (e.g. background MPEG-TS stream or stray UDP)
+                continue
+
+            # 32-byte header: Magic(4B), GroupIdx(2B), Reserved(2B), GlobalSeq(8B), GroupSeq(8B), Timestamp(8B)
+            _, grp_idx, _, global_seq, seq, _ = struct.unpack("!IHHQQQ", data[:32])
 
             total_received += 1
             if grp_idx not in grp_stats:
