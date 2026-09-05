@@ -161,9 +161,11 @@ iptv_multicast_integration_lab/
     ├── diagnose.sh           # Non-destructive pre-flight check of host, NICs, tools
     ├── start_client.sh       # VLC STB client manager (run | start | stop | status)
     ├── scenario.sh           # Multi-phase automated smoke scenario
+    ├── test_client_quality.sh   # Multi-client concurrent throughput, jitter, and zero packet loss benchmark
+    ├── test_client_stability.sh # Multi-client RFC 4541 Fast Leave isolation and zapping soak benchmark
     ├── verify_capture.sh     # Automated PCAP verification & latency analysis
     ├── view_stream_gui.sh    # Desktop GUI player (VLC/FFplay) on Ubuntu host with auto routing
-    ├── benchmark_suite.sh    # Comprehensive benchmark suite (scale, churn, stress, loss)
+    ├── benchmark_suite.sh    # Comprehensive benchmark suite (quality, stability, scale, churn, stress, loss)
     └── dut_collector.sh      # Remote router state and multicast diagnostics collector
 ```
 
@@ -250,14 +252,17 @@ Deploys both `br-test-wan` and `br-test-lan` and starts streaming, but skips cli
 
 #### Mode 4: Full Physical DUT Mode (Automated End-to-End)
 ```bash
-# Dynamic DHCP Mode: Clients obtain IP from DUT LAN DHCP server (Default if CLIENT_IP_MODE=dhcp)
-sudo ./scripts/setup.sh --physical --dhcp
+# Dynamic DHCP Mode: Emulate 5 STB clients obtaining IPs from DUT LAN DHCP
+sudo ./scripts/setup.sh --physical --dhcp --clients 5
 
-# Static Mode: Clients use static IPs from config.env (10.20.0.11/24, 10.20.0.12/24)
-sudo ./scripts/setup.sh --physical --static
+# Scale up to 10 or 20 clients:
+sudo ./scripts/setup.sh --physical --clients 10
+
+# Static Mode: Clients use deterministic static IPs
+sudo ./scripts/setup.sh --physical --static --clients 5
 ```
-Deploys both bridges, starts media server streaming in `ns-server`, and launches internal STB client namespaces (`ns-stb1`, `ns-stb2`). When running in DHCP mode, clients automatically send DHCP Discover requests with:
-* **Option 12 (Host Name)**: `stb-living-room` and `stb-bedroom`
+Deploys both bridges, starts media server streaming in `ns-server`, and launches $N$ internal STB client namespaces (`ns-stb1` .. `ns-stbN`). Each client is assigned a unique locally administered MAC address (`02:54:00:20:00:XX`) to guarantee distinct DHCP leases without exhausting pool capacity. When running in DHCP mode, clients automatically send DHCP Discover requests with:
+* **Option 12 (Host Name)**: `stb-01`, `stb-02`, ..., `stb-N`
 * **Option 60 (Vendor Class Identifier)**: `IPTV_STB`
 
 #### Mode 5: Virtual Simulation Mode (No Hardware Required)
@@ -495,6 +500,8 @@ This lab incorporates specialized benchmark tools and RFC compliance test harnes
 | Script / Tool | Category | Description |
 |---|---|---|
 | [`./scripts/benchmark_suite.sh`](scripts/benchmark_suite.sh) | **Master Suite** | Master runner executing all benchmark tests and generating comprehensive report |
+| [`./scripts/test_client_quality.sh`](scripts/test_client_quality.sh) | **Multi-Client Quality** | Concurrent packet loss, throughput, and QoS across $N$ client namespaces simultaneously |
+| [`./scripts/test_client_stability.sh`](scripts/test_client_stability.sh) | **Multi-Client Stability** | RFC 4541 Fast Leave isolation and multi-client concurrent zapping churn soak |
 | [`./scripts/test_scale.sh`](scripts/test_scale.sh) | **Capacity Scale** | Joins N distinct groups (`239.100.1.1-32`); evaluates router snooping and table capacity |
 | [`./scripts/test_churn.sh`](scripts/test_churn.sh) | **Rapid Churn** | Executes rapid Join/Leave cycles (e.g. 100ms) to evaluate control-plane stability |
 | [`./scripts/test_query_stress.sh`](scripts/test_query_stress.sh) | **Query Stress** | Injects high-rate Group-Specific Queries (e.g. 250 qps) addressed to the multicast group |
@@ -506,7 +513,7 @@ This lab incorporates specialized benchmark tools and RFC compliance test harnes
 ### 2. Standalone Protocol Tools (`tools/`)
 
 All protocol test tools in `tools/` are standalone Python 3 utilities utilizing the standard library (no pip dependencies):
-* **`tools/igmp_client.py`**: High-performance IGMP client supporting range syntax (`239.100.1.1-32`), hold durations, rapid churn loops, and IGMPv3 SSM (`--sources`).
+* **`tools/igmp_client.py`**: High-performance IGMP client supporting range syntax (`239.100.1.1-32`), hold durations, rapid churn loops, multi-channel zapping (`--zap`), and IGMPv3 SSM (`--sources`).
 * **`tools/igmp_query.py`**: Raw `AF_PACKET` socket query injector supporting General and Group-Specific Queries, configurable rates, custom source IP/MAC, ToS byte (`--tos`), and DF bit (`--df`).
 * **`tools/mcast_sender.py`**: High-precision UDP multicast transmitter with per-group and global sequence numbers, configurable payload sizing, and pacing.
 * **`tools/mcast_receiver.py`**: Multi-group UDP receiver measuring out-of-order packets, sequence gaps, missing packet count, and exact loss ratios.
@@ -518,6 +525,8 @@ All protocol test tools in `tools/` are standalone Python 3 utilities utilizing 
 ./scripts/benchmark_suite.sh all
 
 # 2. Run specific benchmarks
+./scripts/benchmark_suite.sh quality     # Multi-client concurrent packet loss & throughput benchmark
+./scripts/benchmark_suite.sh stability   # Multi-client Fast Leave isolation & zapping soak benchmark
 ./scripts/benchmark_suite.sh scale       # Multicast group capacity scale benchmark
 ./scripts/benchmark_suite.sh churn       # Rapid Join/Leave churn stability benchmark
 ./scripts/benchmark_suite.sh stress      # High-rate query stress benchmark
@@ -525,6 +534,11 @@ All protocol test tools in `tools/` are standalone Python 3 utilities utilizing 
 ./scripts/benchmark_suite.sh querier     # Foreign LAN querier benchmark
 ./scripts/benchmark_suite.sh diagnostics # Collect router multicast tables & status
 ./scripts/benchmark_suite.sh pcap        # Verify packet timing & headers in capture
+
+# 3. Direct Quality & Stability invocations with custom parameters:
+sudo ./scripts/test_client_quality.sh --clients all --groups 239.100.1.1-4 --rate 1200 --duration 15
+sudo ./scripts/test_client_stability.sh fast-leave --cycles 30 --churn-interval 100
+sudo ./scripts/test_client_stability.sh churn-soak --soak-duration 30 --groups 239.100.1.1-8
 ```
 
 

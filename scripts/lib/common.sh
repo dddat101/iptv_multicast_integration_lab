@@ -20,6 +20,10 @@ require_root() {
     [[ ${EUID} -eq 0 ]] || die "This script requires root privileges. Please run with sudo."
 }
 
+is_root() {
+    [[ ${EUID} -eq 0 ]]
+}
+
 require_cmd() {
     local cmd="$1"
     command -v "${cmd}" >/dev/null 2>&1 || die "Missing required command: ${cmd}"
@@ -64,6 +68,9 @@ load_config() {
     : "${SERVER_NAME:=ns-server}"
     : "${SERVER_IP:=10.10.0.2/24}"
     : "${SERVER_GW:=10.10.0.1}"
+    : "${CLIENT_COUNT:=5}"
+    : "${CLIENT_PREFIX:=ns-stb}"
+    : "${CLIENT_HOSTNAME_PREFIX:=stb}"
     : "${CLIENT1_NAME:=ns-stb1}"
     : "${CLIENT1_IP:=10.20.0.11/24}"
     : "${CLIENT1_GW:=10.20.0.1}"
@@ -256,6 +263,7 @@ attach_netns_to_bridge() {
     local cidr="${5:-}"
     local gateway="${6:-}"
     local hostname="${7:-}"
+    local mac="${8:-}"
 
     netns_create "${ns}"
 
@@ -267,19 +275,27 @@ attach_netns_to_bridge() {
 
     ip -n "${ns}" link set lo up
     ip -n "${ns}" link set "${peer_veth}" name eth0
+    if [[ -n "${mac}" ]]; then
+        ip -n "${ns}" link set eth0 address "${mac}" 2>/dev/null || true
+    fi
     ip -n "${ns}" addr flush dev eth0 2>/dev/null || true
     if [[ -n "${cidr}" ]]; then
         ip -n "${ns}" addr add "${cidr}" dev eth0
+        printf '%s\n' "${cidr%%/*}" > "${STATE_DIR}/ip-${ns}.txt"
     fi
     ip -n "${ns}" link set eth0 up
     if [[ -n "${gateway}" ]]; then
         ip -n "${ns}" route replace default via "${gateway}" dev eth0 2>/dev/null || true
+        printf '%s\n' "${gateway}" > "${STATE_DIR}/gw-${ns}.txt"
     fi
 
     ip -n "${ns}" sysctl -q -w "net.ipv4.igmp_max_memberships=256" 2>/dev/null || true
 
     if [[ -n "${hostname}" ]]; then
         printf '%s\n' "${hostname}" > "${STATE_DIR}/hostname-${ns}.txt"
+    fi
+    if [[ -n "${mac}" ]]; then
+        printf '%s\n' "${mac}" > "${STATE_DIR}/mac-${ns}.txt"
     fi
 }
 
@@ -304,6 +320,78 @@ run_in_netns_user() {
         ip netns exec "${ns}" runuser -u "${user}" -- "$@"
     else
         ip netns exec "${ns}" "$@"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# STB Client Scaling Helpers
+# ------------------------------------------------------------------------------
+get_client_count() {
+    local count="${CLIENT_COUNT:-5}"
+    if [[ -f "${STATE_DIR}/topology_state.env" ]]; then
+        local saved_count
+        saved_count="$(grep '^CLIENT_COUNT=' "${STATE_DIR}/topology_state.env" 2>/dev/null | cut -d= -f2 | tr -d "'\"")"
+        if [[ -n "${saved_count}" && "${saved_count}" =~ ^[0-9]+$ ]]; then
+            count="${saved_count}"
+        fi
+    fi
+    printf '%s\n' "${count}"
+}
+
+get_client_name() {
+    local idx="$1"
+    if [[ "${idx}" == "1" && -n "${CLIENT1_NAME:-}" ]]; then
+        printf '%s\n' "${CLIENT1_NAME}"
+    elif [[ "${idx}" == "2" && -n "${CLIENT2_NAME:-}" ]]; then
+        printf '%s\n' "${CLIENT2_NAME}"
+    else
+        printf '%s%d\n' "${CLIENT_PREFIX:-ns-stb}" "${idx}"
+    fi
+}
+
+get_client_hostname() {
+    local idx="$1"
+    if [[ "${idx}" == "1" && -n "${CLIENT1_HOSTNAME:-}" ]]; then
+        printf '%s\n' "${CLIENT1_HOSTNAME}"
+    elif [[ "${idx}" == "2" && -n "${CLIENT2_HOSTNAME:-}" ]]; then
+        printf '%s\n' "${CLIENT2_HOSTNAME}"
+    else
+        printf '%s-%02d\n' "${CLIENT_HOSTNAME_PREFIX:-stb}" "${idx}"
+    fi
+}
+
+get_client_mac() {
+    local idx="$1"
+    printf '02:54:00:20:00:%02x\n' "${idx}"
+}
+
+get_client_ip() {
+    local idx="$1"
+    if [[ "${idx}" == "1" && -n "${CLIENT1_IP:-}" ]]; then
+        printf '%s\n' "${CLIENT1_IP}"
+    elif [[ "${idx}" == "2" && -n "${CLIENT2_IP:-}" ]]; then
+        printf '%s\n' "${CLIENT2_IP}"
+    else
+        printf '10.20.0.%d/24\n' "$(( 10 + idx ))"
+    fi
+}
+
+get_all_client_names() {
+    local count
+    count="$(get_client_count)"
+    local i
+    for (( i=1; i<=count; i++ )); do
+        get_client_name "${i}"
+    done
+}
+
+get_active_client_names() {
+    local active_list
+    active_list="$(ip netns list 2>/dev/null | awk '{print $1}' | grep -E '^ns-stb[0-9]+$' | sort -V || true)"
+    if [[ -n "${active_list}" ]]; then
+        printf '%s\n' "${active_list}"
+    else
+        get_all_client_names
     fi
 }
 

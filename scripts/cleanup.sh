@@ -62,15 +62,17 @@ main() {
 
     # Namespace streamer and client daemons
     stop_pidfile "${STATE_DIR}/server.pid"
-    stop_pidfile "${STATE_DIR}/client_1.pid"
-    stop_pidfile "${STATE_DIR}/client_2.pid"
+    for pidfile in "${STATE_DIR}"/client_*.pid; do
+        [[ -f "${pidfile}" ]] && stop_pidfile "${pidfile}"
+    done
 
     # Stop client DHCP daemons
     if [[ -x "${SCRIPT_DIR}/client_dhcp.sh" ]]; then
         "${SCRIPT_DIR}/client_dhcp.sh" release all 2>/dev/null || true
     fi
-    stop_pidfile "${STATE_DIR}/udhcpc-${CLIENT1_NAME}.pid"
-    stop_pidfile "${STATE_DIR}/udhcpc-${CLIENT2_NAME}.pid"
+    for pidfile in "${STATE_DIR}"/udhcpc-*.pid; do
+        [[ -f "${pidfile}" ]] && stop_pidfile "${pidfile}"
+    done
 
     # WAN DHCP server
     wan_dhcp_server stop 2>/dev/null || true
@@ -83,11 +85,17 @@ main() {
     fi
 
     # 3. Delete virtual interfaces
-    for v in veth-mserv vpeer-mserv veth-mc1 vpeer-mc1 veth-mc2 vpeer-mc2 veth-wan-ctl vpeer-wan-ctl v-dut-wan-h v-dut-lan-h; do
+    for v in $(ip -br link show 2>/dev/null | awk '{print $1}' | grep -E '^v(eth|peer)-mc' || true); do
+        ip link del "${v}" 2>/dev/null || true
+    done
+    for v in veth-mserv vpeer-mserv veth-wan-ctl vpeer-wan-ctl v-dut-wan-h v-dut-lan-h; do
         ip link del "${v}" 2>/dev/null || true
     done
 
     # 4. Delete network namespaces
+    for ns in $(ip netns list 2>/dev/null | awk '{print $1}' | grep -E '^ns-stb[0-9]+$' || true); do
+        netns_del "${ns}"
+    done
     for ns in "${CLIENT1_NAME}" "${CLIENT2_NAME}" "${SERVER_NAME}" "${WAN_NS}" "ns-dut"; do
         netns_del "${ns}"
     done

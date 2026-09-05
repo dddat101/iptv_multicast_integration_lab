@@ -225,6 +225,52 @@ def cycle_memberships(groups: list[str], interface_ip: str, interval_ms: int, cy
 
 
 
+def zap_channels(groups: list[str], interface_ip: str, interval_ms: int, duration_sec: float, random_order: bool = False) -> int:
+    import random
+    ensure_sysctl_memberships(len(groups) + 16)
+    delay = max(interval_ms / 1000.0, 0.05)
+    deadline = time.monotonic() + duration_sec
+    total_zaps = 0
+    idx = 0
+
+    interrupted = False
+    def sig_handler(sig, frame):
+        nonlocal interrupted
+        interrupted = True
+
+    signal.signal(signal.SIGINT, sig_handler)
+    signal.signal(signal.SIGTERM, sig_handler)
+
+    sock = new_mcast_socket()
+    try:
+        while time.monotonic() < deadline and not interrupted:
+            grp = random.choice(groups) if random_order else groups[idx % len(groups)]
+            idx += 1
+            mreq = membership_req(grp, interface_ip)
+            try:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            except OSError:
+                pass
+            total_zaps += 1
+            print(f"ZAP JOIN {grp}", flush=True)
+
+            sleep_until = min(deadline, time.monotonic() + delay)
+            while time.monotonic() < sleep_until and not interrupted:
+                time.sleep(0.05)
+
+            try:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, mreq)
+            except OSError:
+                pass
+            print(f"ZAP LEAVE {grp}", flush=True)
+            time.sleep(0.02)
+    finally:
+        sock.close()
+
+    print(f"ZAP_COMPLETE zaps={total_zaps} duration_sec={duration_sec}", flush=True)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="IGMP Multicast Client Test Tool")
     parser.add_argument("--interface-ip", required=True, help="Local interface IPv4 address")
@@ -235,13 +281,20 @@ def main() -> int:
                         help="Duration in seconds to maintain membership (0 = indefinite)")
     parser.add_argument("--interval-ms", type=int, default=0,
                         help="Rapid churn interval in milliseconds (e.g. 100)")
-
     parser.add_argument("--cycles", type=int, default=0,
                         help="Number of Join/Leave cycles to repeat")
+    parser.add_argument("--zap", action="store_true",
+                        help="Enable channel zapping mode across specified groups")
+    parser.add_argument("--random", action="store_true",
+                        help="Choose channels randomly in zap mode")
 
     args = parser.parse_args()
 
     sources = [s.strip() for s in args.sources.split(",") if s.strip()]
+
+    if args.zap:
+        interval = args.interval_ms if args.interval_ms > 0 else 500
+        return zap_channels(args.groups, args.interface_ip, interval, args.hold_sec, args.random)
 
     if args.cycles > 0:
         if args.interval_ms <= 0:

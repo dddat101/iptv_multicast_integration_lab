@@ -35,6 +35,7 @@ Options:
   -v, --virtual, --no-dut Run in Virtual Simulation mode (self-contained, no physical DUT required)
   -w, --wan-only          Deploy WAN side only (WAN bridge, WAN DHCP & Server; skips LAN_IF and clients)
   -s, --server-only       Deploy Media Server only (skip STB client namespaces)
+  -n, --clients <count>   Number of STB client namespaces to emulate (default: CLIENT_COUNT in config.env)
   --dhcp, --client-dhcp   Have STB clients obtain dynamic IP from DUT LAN DHCP [Default if CLIENT_IP_MODE=dhcp]
   --static, --client-static Force STB clients to use static IP configuration
   --no-stream             Do not auto-start streaming immediately after setup
@@ -73,6 +74,7 @@ main() {
             --physical|-p)             IS_VIRTUAL=0; shift ;;
             --wan-only|-w)             wan_only=1; SERVER_ONLY=1; shift ;;
             --server-only|-s)          SERVER_ONLY=1; shift ;;
+            -n|--clients)              CLIENT_COUNT="$2"; shift 2 ;;
             --dhcp|--client-dhcp)      CLIENT_IP_MODE="dhcp"; shift ;;
             --static|--client-static)  CLIENT_IP_MODE="static"; shift ;;
             --no-stream)               auto_stream=0; shift ;;
@@ -133,40 +135,42 @@ main() {
     ip -n "${WAN_NS}" addr flush dev eth0 || true
     ip -n "${WAN_NS}" addr add "${WAN_NS_IP}" dev eth0
     ip -n "${WAN_NS}" link set eth0 up
+    printf '%s\n' "wan-gateway" > "${STATE_DIR}/hostname-${WAN_NS}.txt"
+    printf '%s\n' "${WAN_NS_IP%%/*}" > "${STATE_DIR}/ip-${WAN_NS}.txt"
+    printf '%s\n' "${WAN_NS_GW}" > "${STATE_DIR}/gw-${WAN_NS}.txt"
 
     if [[ "${ENABLE_WAN_DHCP:-0}" == "1" ]]; then
         wan_dhcp_server start
     fi
 
     log_info "Creating media server namespace: ${SERVER_NAME} (${SERVER_IP})..."
-    attach_netns_to_bridge "${SERVER_NAME}" "${WAN_BRIDGE}" veth-mserv vpeer-mserv "${SERVER_IP}" "${SERVER_GW}" "mcast-server"
+    attach_netns_to_bridge "${SERVER_NAME}" "${WAN_BRIDGE}" veth-mserv vpeer-mserv "${SERVER_IP}" "${SERVER_GW}" "mcast-server" "02:54:00:10:00:02"
 
     if (( SERVER_ONLY == 0 && wan_only == 0 )); then
-        local c1_ip="${CLIENT1_IP}"
-        local c1_gw="${CLIENT1_GW}"
-        local c2_ip="${CLIENT2_IP}"
-        local c2_gw="${CLIENT2_GW}"
+        local count="${CLIENT_COUNT:-5}"
+        log_info "Instantiating ${count} STB client namespaces (${CLIENT_IP_MODE} mode)..."
+        local i
+        for (( i=1; i<=count; i++ )); do
+            local c_name c_host c_mac c_ip c_gw
+            c_name="$(get_client_name "${i}")"
+            c_host="$(get_client_hostname "${i}")"
+            c_mac="$(get_client_mac "${i}")"
+
+            if [[ "${CLIENT_IP_MODE}" == "dhcp" ]]; then
+                c_ip=""
+                c_gw=""
+            else
+                c_ip="$(get_client_ip "${i}")"
+                c_gw="${CLIENT1_GW:-10.20.0.1}"
+            fi
+
+            log_info "  [Client ${i}/${count}] Creating ${c_name} (Host: '${c_host}', MAC: '${c_mac}')..."
+            attach_netns_to_bridge "${c_name}" "${LAN_BRIDGE}" "veth-mc${i}" "vpeer-mc${i}" "${c_ip}" "${c_gw}" "${c_host}" "${c_mac}"
+            force_netns_igmp_version "${c_name}" "${FORCE_IGMP_VERSION}"
+        done
 
         if [[ "${CLIENT_IP_MODE}" == "dhcp" ]]; then
-            c1_ip=""
-            c1_gw=""
-            c2_ip=""
-            c2_gw=""
-            log_info "Client addressing mode: Dynamic DHCP from DUT LAN (Vendor: '${CLIENT_DHCP_VENDOR:-<none>}')"
-        else
-            log_info "Client addressing mode: Static (${CLIENT1_IP}, ${CLIENT2_IP})"
-        fi
-
-        log_info "Creating client 1 namespace: ${CLIENT1_NAME} (Hostname: '${CLIENT1_HOSTNAME}')..."
-        attach_netns_to_bridge "${CLIENT1_NAME}" "${LAN_BRIDGE}" veth-mc1 vpeer-mc1 "${c1_ip}" "${c1_gw}" "${CLIENT1_HOSTNAME}"
-        force_netns_igmp_version "${CLIENT1_NAME}" "${FORCE_IGMP_VERSION}"
-
-        log_info "Creating client 2 namespace: ${CLIENT2_NAME} (Hostname: '${CLIENT2_HOSTNAME}')..."
-        attach_netns_to_bridge "${CLIENT2_NAME}" "${LAN_BRIDGE}" veth-mc2 vpeer-mc2 "${c2_ip}" "${c2_gw}" "${CLIENT2_HOSTNAME}"
-        force_netns_igmp_version "${CLIENT2_NAME}" "${FORCE_IGMP_VERSION}"
-
-        if [[ "${CLIENT_IP_MODE}" == "dhcp" ]]; then
-            log_info "Requesting DHCP leases for clients from DUT LAN via udhcpc..."
+            log_info "Requesting DHCP leases for all clients from DUT LAN via udhcpc..."
             "${SCRIPT_DIR}/client_dhcp.sh" daemon all || log_warn "DHCP lease request to DUT LAN timed out; clients will continue in background."
         fi
     else
@@ -187,6 +191,7 @@ IS_VIRTUAL='${IS_VIRTUAL}'
 SERVER_ONLY='${SERVER_ONLY}'
 WAN_ONLY='${wan_only}'
 CLIENT_IP_MODE='${CLIENT_IP_MODE}'
+CLIENT_COUNT='${CLIENT_COUNT:-5}'
 WAN_BRIDGE='${WAN_BRIDGE}'
 LAN_BRIDGE='${LAN_BRIDGE}'
 WAN_IF='${WAN_IF}'

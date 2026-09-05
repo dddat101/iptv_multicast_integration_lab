@@ -31,7 +31,7 @@ main() {
     printf 'Payload Size:   %d bytes\n' "${pkt_size}"
     printf 'Rate:           %d packets/sec (total across all groups)\n' "${rate}"
     printf 'Duration:       %d seconds\n' "${duration}"
-    printf '------------------------------------------------------------------------------\n'
+    printf '%s\n' '------------------------------------------------------------------------------'
 
     trap cleanup_loss_test EXIT INT TERM
 

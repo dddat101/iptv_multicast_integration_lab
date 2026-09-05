@@ -75,9 +75,9 @@ run_dut_ssh() {
         printf 'DUT Target: %s\n\n' "${target}"
 
         for cmd in "${DUT_COMMANDS[@]}"; do
-            printf '----------------------------------------------------------------------\n'
+            printf '%s\n' '----------------------------------------------------------------------'
             printf 'COMMAND: %s\n' "${cmd}"
-            printf '----------------------------------------------------------------------\n'
+            printf '%s\n' '----------------------------------------------------------------------'
             if command -v sshpass >/dev/null 2>&1 && [[ -n "${pass}" ]]; then
                 sshpass -p "${pass}" "${ssh_cmd[@]}" "${target}" "${cmd}" 2>&1 || printf 'EXECUTION ERROR: %s\n' "${cmd}"
             else
@@ -89,9 +89,9 @@ run_dut_ssh() {
         if [[ -n "${DUT_CUSTOM_COMMANDS:-}" ]]; then
             while IFS= read -r custom_cmd; do
                 [[ -n "${custom_cmd}" ]] || continue
-                printf '----------------------------------------------------------------------\n'
+                printf '%s\n' '----------------------------------------------------------------------'
                 printf 'CUSTOM COMMAND: %s\n' "${custom_cmd}"
-                printf '----------------------------------------------------------------------\n'
+                printf '%s\n' '----------------------------------------------------------------------'
                 if command -v sshpass >/dev/null 2>&1 && [[ -n "${pass}" ]]; then
                     sshpass -p "${pass}" "${ssh_cmd[@]}" "${target}" "${custom_cmd}" 2>&1 || printf 'EXECUTION ERROR: %s\n' "${custom_cmd}"
                 else

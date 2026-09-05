@@ -44,12 +44,20 @@ case "${1:-}" in
                 break
             done
         fi
+
+        if [[ -n "${CLIENT_NETNS:-}" && -n "${STATE_DIR:-}" && -d "${STATE_DIR:-}" ]]; then
+            [[ -n "${ip:-}" ]] && printf '%s\n' "${ip}" > "${STATE_DIR}/ip-${CLIENT_NETNS}.txt"
+            [[ -n "${router:-}" ]] && printf '%s\n' "${router%% *}" > "${STATE_DIR}/gw-${CLIENT_NETNS}.txt"
+        fi
         ;;
 
     deconfig)
         ip link set dev "${interface}" up 2>/dev/null || true
         ip -4 addr flush dev "${interface}" 2>/dev/null || true
         ip -4 route flush dev "${interface}" 2>/dev/null || true
+        if [[ -n "${CLIENT_NETNS:-}" && -n "${STATE_DIR:-}" && -d "${STATE_DIR:-}" ]]; then
+            rm -f "${STATE_DIR}/ip-${CLIENT_NETNS}.txt" "${STATE_DIR}/gw-${CLIENT_NETNS}.txt" 2>/dev/null || true
+        fi
         ;;
 
     leasefail|nak)

@@ -22,7 +22,7 @@ main() {
     printf '==============================================================================\n'
     printf 'LAN Interface:      %s\n' "${lan_iface}"
     printf 'Foreign Querier IP: %s\n' "${foreign_ip}"
-    printf '------------------------------------------------------------------------------\n'
+    printf '%s\n' '------------------------------------------------------------------------------'
 
     if netns_exists "${CLIENT1_NAME:-ns-stb1}"; then
         log_info "Injecting 5 foreign IGMP General Queries from IP ${foreign_ip} via namespace ${CLIENT1_NAME} (eth0)..."

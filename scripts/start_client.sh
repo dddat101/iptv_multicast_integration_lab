@@ -15,23 +15,36 @@ source "${SCRIPT_DIR}/lib/common.sh"
 usage() {
     cat <<'USAGE'
 Usage:
-  sudo ./scripts/start_client.sh [1|2] [command]
+  sudo ./scripts/start_client.sh [target] [command]
+
+Targets:
+  <N> | client<N> Client index (e.g. 1, 2, 3...) [Default: 1]
+  <name>          Explicit namespace name (e.g. ns-stb1)
+  all             All active STB client namespaces (for start, stop, status)
 
 Commands:
   run             Run VLC receiver interactively in foreground [Default if TTY]
   start           Run VLC receiver in background daemon mode
   stop            Stop background VLC receiver
   status          Show status of VLC receiver and IGMP group membership
+
+Examples:
+  sudo ./scripts/start_client.sh 1 run
+  sudo ./scripts/start_client.sh all start
+  sudo ./scripts/start_client.sh all status
+  sudo ./scripts/start_client.sh all stop
 USAGE
 }
 
-get_client_name() {
-    local client_id="$1"
-    case "${client_id}" in
-        1) printf '%s\n' "${CLIENT1_NAME}" ;;
-        2) printf '%s\n' "${CLIENT2_NAME}" ;;
-        *) die "Invalid client ID '${client_id}'. Use 1 or 2." ;;
-    esac
+resolve_client_name() {
+    local target="$1"
+    if [[ "${target}" =~ ^([0-9]+)$ ]]; then
+        get_client_name "${BASH_REMATCH[1]}"
+    elif [[ "${target}" =~ ^client([0-9]+)$ ]]; then
+        get_client_name "${BASH_REMATCH[1]}"
+    else
+        printf '%s\n' "${target}"
+    fi
 }
 
 get_client_user() {
@@ -43,9 +56,7 @@ get_client_user() {
 }
 
 run_foreground() {
-    local id="$1"
-    local name
-    name="$(get_client_name "${id}")"
+    local name="$1"
     local user
     user="$(get_client_user)"
 
@@ -58,20 +69,18 @@ run_foreground() {
 }
 
 start_background() {
-    local id="$1"
-    local name
-    name="$(get_client_name "${id}")"
+    local name="$1"
     local user
     user="$(get_client_user)"
-    local pidfile="${STATE_DIR}/client_${id}.pid"
-    local logfile="${LOG_DIR}/client_${id}.log"
+    local pidfile="${STATE_DIR}/client_${name}.pid"
+    local logfile="${LOG_DIR}/client_${name}.log"
 
     require_root
     require_cmd cvlc
     netns_exists "${name}" || die "Namespace '${name}' is not running. Run sudo ./scripts/setup.sh first."
 
     if is_pidfile_running "${pidfile}"; then
-        log_warn "Client ${id} (${name}) already running (PID $(cat "${pidfile}"))."
+        log_warn "Client ${name} already running (PID $(cat "${pidfile}"))."
         return 0
     fi
 
@@ -94,10 +103,8 @@ start_background() {
 }
 
 stop_background() {
-    local id="$1"
-    local name
-    name="$(get_client_name "${id}")"
-    local pidfile="${STATE_DIR}/client_${id}.pid"
+    local name="$1"
+    local pidfile="${STATE_DIR}/client_${name}.pid"
 
     require_root
     if is_pidfile_running "${pidfile}"; then
@@ -119,12 +126,10 @@ stop_background() {
 }
 
 show_status() {
-    local id="$1"
-    local name
-    name="$(get_client_name "${id}")"
-    local pidfile="${STATE_DIR}/client_${id}.pid"
+    local name="$1"
+    local pidfile="${STATE_DIR}/client_${name}.pid"
 
-    printf '== Client %s (%s) Status ==\n' "${id}" "${name}"
+    printf '== Client %s Status ==\n' "${name}"
     if is_pidfile_running "${pidfile}"; then
         printf 'Status:     RUNNING (PID %s)\n' "$(cat "${pidfile}")"
     else
@@ -132,38 +137,86 @@ show_status() {
     fi
 
     if netns_exists "${name}"; then
-        local ip_addr
-        ip_addr="$(ip netns exec "${name}" ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+        local ip_addr=""
+        if is_root; then
+            ip_addr="$(ip -n "${name}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+            [[ -n "${ip_addr}" ]] && printf '%s\n' "${ip_addr}" > "${STATE_DIR}/ip-${name}.txt" 2>/dev/null || true
+        fi
+        if [[ -z "${ip_addr}" ]]; then
+            ip_addr="$(cat "${STATE_DIR}/ip-${name}.txt" 2>/dev/null || true)"
+        fi
+        if [[ -z "${ip_addr}" && -f "${LOG_DIR}/udhcpc-${name}.log" ]]; then
+            ip_addr="$(awk '/lease of/ {for(i=1;i<=NF;i++) if($i=="of") print $(i+1)}' "${LOG_DIR}/udhcpc-${name}.log" 2>/dev/null | tr -d ',' | tail -n1 || true)"
+        fi
         printf 'IP Address: %s\n' "${ip_addr:-<none>}"
         printf 'Multicast Groups Joined:\n'
-        ip netns exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet / {print "  - " $2}' || true
+        local found=0
+        if is_root; then
+            while IFS= read -r g; do
+                [[ -n "${g}" ]] && printf '  - %s\n' "${g}" && found=1
+            done < <(ip netns exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet / {print $2}' || true)
+        fi
+        if (( found == 0 )); then
+            if ! is_root; then
+                printf '  (Run with sudo to inspect live IGMP memberships)\n'
+            else
+                printf '  <none>\n'
+            fi
+        fi
+    else
+        printf 'Namespace:  Not found\n'
     fi
 }
 
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
-    local client_id="${1:-1}"
+    local target="${1:-1}"
     local cmd="${2:-}"
 
     # Handle syntax like: start_client.sh status 1
-    if [[ "${client_id}" =~ ^(run|start|stop|status)$ ]]; then
-        cmd="${client_id}"
-        client_id="${2:-1}"
+    if [[ "${target}" =~ ^(run|start|stop|status)$ ]]; then
+        cmd="${target}"
+        target="${2:-1}"
     fi
 
     if [[ -z "${cmd}" ]]; then
-        if [[ -t 0 ]]; then
+        if [[ -t 0 && "${target}" != "all" ]]; then
             cmd="run"
         else
             cmd="start"
         fi
     fi
 
+    if [[ "${target}" == "all" ]]; then
+        [[ "${cmd}" != "run" ]] || die "Foreground interactive mode 'run' cannot be used with target 'all'."
+        local active_names
+        active_names="$(get_active_client_names)"
+        while read -r c_name; do
+            [[ -z "${c_name}" ]] && continue
+            case "${cmd}" in
+                start)  start_background "${c_name}" ;;
+                stop)   stop_background "${c_name}" ;;
+                status) show_status "${c_name}" ;;
+            esac
+        done <<< "${active_names}"
+        return 0
+    fi
+
+    local client_name
+    client_name="$(resolve_client_name "${target}")"
+
     case "${cmd}" in
-        run)    run_foreground "${client_id}" ;;
-        start)  start_background "${client_id}" ;;
-        stop)   stop_background "${client_id}" ;;
-        status) show_status "${client_id}" ;;
+        run)    run_foreground "${client_name}" ;;
+        start)  start_background "${client_name}" ;;
+        stop)   stop_background "${client_name}" ;;
+        status) show_status "${client_name}" ;;
         -h|--help) usage ;;
         *)      usage; exit 2 ;;
     esac

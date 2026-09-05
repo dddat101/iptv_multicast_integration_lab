@@ -25,11 +25,55 @@ show_namespace_details() {
         return 0
     fi
 
-    local ip_addr gw host mac ip_mode
-    ip_addr="$(ip -n "${name}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
-    gw="$(ip netns exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
+    local ip_addr="" gw="" host="" mac="" ip_mode=""
     host="$(cat "${STATE_DIR}/hostname-${name}.txt" 2>/dev/null || echo '<default>')"
-    mac="$(ip -n "${name}" link show dev eth0 2>/dev/null | awk '/link\/ether/ {print $2}' || echo '<unknown>')"
+
+    # 1. Live query from kernel (requires root / sudo)
+    if is_root; then
+        ip_addr="$(ip -n "${name}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+        gw="$(ip netns exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
+        mac="$(ip -n "${name}" link show dev eth0 2>/dev/null | awk '/link\/ether/ {print $2}' || true)"
+
+        [[ -n "${ip_addr}" ]] && printf '%s\n' "${ip_addr}" > "${STATE_DIR}/ip-${name}.txt" 2>/dev/null || true
+        [[ -n "${gw}" ]] && printf '%s\n' "${gw}" > "${STATE_DIR}/gw-${name}.txt" 2>/dev/null || true
+        [[ -n "${mac}" ]] && printf '%s\n' "${mac}" > "${STATE_DIR}/mac-${name}.txt" 2>/dev/null || true
+    fi
+
+    # 2. Resilient fallbacks for non-root query or unqueried fields
+    if [[ -z "${mac}" ]]; then
+        mac="$(cat "${STATE_DIR}/mac-${name}.txt" 2>/dev/null || true)"
+    fi
+    if [[ -z "${mac}" && "${name}" =~ ([0-9]+)$ ]]; then
+        mac="$(get_client_mac "${BASH_REMATCH[1]}")"
+    fi
+
+    if [[ -z "${ip_addr}" ]]; then
+        ip_addr="$(cat "${STATE_DIR}/ip-${name}.txt" 2>/dev/null || true)"
+    fi
+    if [[ -z "${ip_addr}" && -f "${LOG_DIR}/udhcpc-${name}.log" ]]; then
+        ip_addr="$(awk '/lease of/ {for(i=1;i<=NF;i++) if($i=="of") print $(i+1)}' "${LOG_DIR}/udhcpc-${name}.log" 2>/dev/null | tr -d ',' | tail -n1 || true)"
+    fi
+    if [[ -z "${ip_addr}" ]]; then
+        if [[ "${name}" == "${SERVER_NAME}" && -n "${SERVER_IP:-}" ]]; then
+            ip_addr="${SERVER_IP%/*}"
+        elif [[ "${name}" == "${WAN_NS}" && -n "${WAN_NS_IP:-}" ]]; then
+            ip_addr="${WAN_NS_IP%/*}"
+        fi
+    fi
+
+    if [[ -z "${gw}" ]]; then
+        gw="$(cat "${STATE_DIR}/gw-${name}.txt" 2>/dev/null || true)"
+    fi
+    if [[ -z "${gw}" && -f "${LOG_DIR}/udhcpc-${name}.log" ]]; then
+        gw="$(awk '/obtained from/ {for(i=1;i<=NF;i++) if($i=="from") print $(i+1)}' "${LOG_DIR}/udhcpc-${name}.log" 2>/dev/null | tr -d ',' | tail -n1 || true)"
+    fi
+    if [[ -z "${gw}" ]]; then
+        if [[ "${name}" == "${SERVER_NAME}" && -n "${SERVER_GW:-}" ]]; then
+            gw="${SERVER_GW}"
+        elif [[ "${name}" == "${WAN_NS}" && -n "${WAN_NS_GW:-}" ]]; then
+            gw="${WAN_NS_GW}"
+        fi
+    fi
 
     ip_mode="Static"
     if is_pidfile_running "${STATE_DIR}/udhcpc-${name}.pid"; then
@@ -37,13 +81,26 @@ show_namespace_details() {
     fi
 
     printf '  Hostname:      %s\n' "${host}"
-    printf '  MAC Address:   %s\n' "${mac}"
+    printf '  MAC Address:   %s\n' "${mac:-<unknown>}"
     printf '  IP Address:    %s (%s)\n' "${ip_addr:-<no-ip>}" "${ip_mode}"
     printf '  Default Route: via %s\n' "${gw:-<none>}"
     printf '  Multicast Groups Joined:\n'
-    while IFS= read -r g; do
-        [[ -n "${g}" ]] && printf '    * %s\n' "${g}"
-    done < <(ip netns exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet / {print $2}' || true)
+    local found_mcast=0
+    if is_root; then
+        while IFS= read -r g; do
+            if [[ -n "${g}" ]]; then
+                printf '    * %s\n' "${g}"
+                found_mcast=1
+            fi
+        done < <(ip netns exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet / {print $2}' || true)
+    fi
+    if (( found_mcast == 0 )); then
+        if ! is_root; then
+            printf '    (Run with sudo to inspect live IGMP memberships)\n'
+        else
+            printf '    <none>\n'
+        fi
+    fi
 }
 
 show_container_details() { show_namespace_details "$@"; }
@@ -113,8 +170,14 @@ main() {
     printf '\n== Network Namespaces ==\n'
     show_namespace_details "${SERVER_NAME}" "FFmpeg Multicast Streamer"
     if [[ "${wan_only}" == "0" ]]; then
-        show_namespace_details "${CLIENT1_NAME}" "VLC STB Client 1"
-        show_namespace_details "${CLIENT2_NAME}" "VLC STB Client 2"
+        local client_names
+        client_names="$(get_active_client_names)"
+        local idx=1
+        while IFS= read -r c_name; do
+            [[ -z "${c_name}" ]] && continue
+            show_namespace_details "${c_name}" "STB Client ${idx}"
+            (( idx++ ))
+        done <<< "${client_names}"
     fi
 
     printf '\n'
