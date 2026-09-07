@@ -30,7 +30,8 @@ This guide is designed for a **Real Multi-Device Physical Testbed** (zero networ
                     v                 v                 v
              +------------+    +------------+    +------------+
              | Client PC1 |    | Client PC2 |    | Client PC3 |
-             | (Live TV)  |    | (Live TV)  |    | (Zapper)   |
+             | (Live TV)  |    | (Live TV)  |    | (Windows/  |
+             |            |    |            |    |  Zapper)   |
              +------------+    +------------+    +------------+
 ```
 
@@ -42,7 +43,7 @@ This guide is designed for a **Real Multi-Device Physical Testbed** (zero networ
 | **DUT Router LAN** | `br0` | `192.168.1.1` | LAN Gateway, DHCP Server & IGMP Querier |
 | **Client PC 1** | Physical LAN | `192.168.1.101` | Steady Receiver (LAN Port 1) |
 | **Client PC 2** | Physical LAN | `192.168.1.102` | Steady Receiver (LAN Port 2) |
-| **Client PC 3** | Physical LAN | `192.168.1.103` | Churner / Zapping STB (LAN Port 3) |
+| **Client PC 3 / Windows PC** | Physical LAN | `192.168.1.108` | Windows Client / Scale & Churner STB (LAN Port 3) |
 
 > [!IMPORTANT]
 > **MTU & Packet Size Adaptation:**
@@ -50,7 +51,62 @@ This guide is designed for a **Real Multi-Device Physical Testbed** (zero networ
 
 ---
 
-## 2. Test Case Execution & Evidence Collection
+## 2. Preparation & Environment Readiness
+
+### 2.1 Media Asset Generation ([`scripts/generate_media.sh`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/generate_media.sh))
+
+The lab provides an automated, high-precision media generator supporting both standard HD single streams and multi-channel asset generation with futuristic animated HUD tech frame effects:
+
+* **Generate Standard 1080p 8Mbps Video Asset (`media/sample_1080p_8mbps.ts`):**
+  ```bash
+  cd /home/dddat/workspace/iptv_multicast_integration_lab
+  ./scripts/generate_media.sh
+  ```
+
+* **Generate 32 Distinct Animated Channels (`media/channel_1.ts` -> `media/channel_32.ts`):**
+  ```bash
+  ./scripts/generate_media.sh -n 32 --preset-low -d 120
+  ```
+  *Each generated channel video features:*
+  - **Dynamic Channel Badge**: Displays `CH 01`, `CH 02`, ... up to `CH 32`.
+  - **Multicast Destination Address**: Displays corresponding IP `239.100.1.X`.
+  - **HUD Tech Frame Overlay**: Outer neon cyan halo, yellow corner brackets, and an animated sweeping laser scanline beam.
+  - **Live Indicator**: Pulsing red "● LIVE" indicator with high-precision running timecode counter (`pts(hms)`).
+  - **Unique Audio Frequency**: Each channel outputs a distinct audio tone (`440 + (i-1)*20 Hz`), allowing clear acoustic verification of channel switching.
+
+* **Custom Image Slideshow or Audio Input:**
+  ```bash
+  # Generate from folder of images with custom audio:
+  ./scripts/generate_media.sh -i /path/to/images -a /path/to/music.mp3 -o media/custom_slideshow.ts
+  ```
+
+---
+
+### 2.2 Windows Client Automation Setup ([`scripts/windows/run_client.ps1`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/windows/run_client.ps1))
+
+For testers using a Windows 10/11 laptop or desktop as a client:
+
+1. **Copy Scripts to Windows Client:**
+   Copy the `scripts/` folder (specifically [`scripts/windows/run_client.bat`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/windows/run_client.bat) and [`scripts/windows/run_client.ps1`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/windows/run_client.ps1)) to your Windows PC.
+
+2. **Run One-Click Network & Firewall Setup (Administrator):**
+   Open PowerShell as Administrator on the Windows client and execute:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode Setup
+   ```
+   *(Or launch `.\scripts\windows\run_client.bat` and choose option `[6]`)*.
+   *This automatically:*
+   - Creates a Windows Defender Firewall inbound allow rule for **UDP Port 5000**.
+   - Adds a static multicast route: `route add 224.0.0.0 mask 240.0.0.0 <LocalIP> metric 1` to route IGMP/Multicast traffic strictly via Ethernet, resolving Wi-Fi vs Ethernet routing conflicts.
+
+3. **Verify Environment Status:**
+   ```powershell
+   .\scripts\windows\run_client.ps1 -Mode Status
+   ```
+
+---
+
+## 3. Test Case Execution & Evidence Collection
 
 ---
 
@@ -66,10 +122,17 @@ This guide is designed for a **Real Multi-Device Physical Testbed** (zero networ
      -i media/sample_1080p_8mbps.ts -c copy -f mpegts \
      "udp://239.10.10.10:5000?pkt_size=1128&ttl=16&localaddr=172.16.0.92"
    ```
-2. **Clients (PC 1, PC 2, PC 3):** Launch video playout simultaneously on all 3 clients:
-   ```bash
-   ffplay "udp://239.10.10.10:5000?buffer_size=4194304"
-   ```
+2. **Clients (PC 1, PC 2, PC 3):** Launch video playout simultaneously:
+   * **On Linux Client PCs:**
+     ```bash
+     ffplay "udp://239.10.10.10:5000?buffer_size=4194304"
+     ```
+   * **On Windows Client PC:**
+     ```powershell
+     .\scripts\windows\run_client.bat
+     # Select Option [1] -> Enter Channel 1 (or run via CLI below):
+     .\scripts\windows\run_client.ps1 -Mode Play -Channel 1
+     ```
 3. **Router DUT (SSH):** Check CPU utilization and SoftIRQ under full load:
    ```sh
    top -n 1
@@ -157,12 +220,12 @@ Screenshot of the Server's `tcpdump -v` output highlighting `tos 0x88`, `flags [
    ```bash
    ffplay -v error "udp://239.10.10.10:5000?buffer_size=4194304"
    ```
-2. **Client PC 3:** Execute 20 rapid Join/Leave cycles (100 ms interval):
-   * *Option A (Using repo Python tool):*
+2. **Client PC 3 / Windows Client:** Execute 20 rapid Join/Leave cycles (100 ms interval):
+   * *Option A (Using repo Python tool on Linux):*
      ```bash
      python3 tools/igmp_client.py --interface-ip 192.168.1.103 --groups 239.10.10.10 churn --cycles 20 --churn-interval-ms 100
      ```
-   * *Option B (Using Bash loop):*
+   * *Option B (Using Bash loop on Linux):*
      ```bash
      for i in $(seq 1 20); do
        timeout 0.5 ffplay -nodisp "udp://239.10.10.10:5000" 2>/dev/null &
@@ -171,6 +234,10 @@ Screenshot of the Server's `tcpdump -v` output highlighting `tos 0x88`, `flags [
        kill -9 $PID 2>/dev/null || true
        sleep 0.1
      done
+     ```
+   * *Option C (Using PowerShell on Windows):*
+     ```powershell
+     .\scripts\windows\run_client.ps1 -Mode Churn -Count 1 -Cycles 20 -DelayMs 100
      ```
 3. **Router DUT (SSH):** Monitor the snooping table during the churn:
    ```sh
@@ -216,25 +283,39 @@ Screenshot of router's `cat /proc/net/igmp` output highlighting `br0: Querier V2
 * **Objective:** Verify router maintains $\ge 32$ concurrent multicast group tables simultaneously, executes 100ms rapid churn without backlog, and withstands 250 qps WAN query flood.
 
 #### Part 1: Stream 32 Multicast Groups on Server (Step 1)
-On Server Host (`Latitude-E6540`), start 32 channels with a single, highly-optimized FFmpeg process:
-```bash
-cd /home/dddat/workspace/iptv_multicast_integration_lab
+On Server Host (`Latitude-E6540`), stream all 32 channels. You can choose between two methods:
 
-# Build 32-output argument list
-OUTPUTS=""
-for i in $(seq 1 32); do
-    OUTPUTS="$OUTPUTS -c copy -f mpegts udp://239.100.1.$i:5000?pkt_size=1128&ttl=16&localaddr=172.16.0.92"
-done
+* **Method A (Recommended — 32 Distinct Animated Channels with HUD Frame & Audio):**
+  Each channel streams its own unique video (`media/channel_1.ts` to `media/channel_32.ts`), displaying individual channel numbers, HUD effects, and unique tone frequencies:
+  ```bash
+  cd /home/dddat/workspace/iptv_multicast_integration_lab
 
-# Launch single-process 32-channel transmitter
-ffmpeg -hide_banner -re -stream_loop -1 \
-    -i media/sample_1080p_8mbps.ts \
-    $OUTPUTS
-```
+  # Build 32-input, 32-output argument list
+  OUTPUTS=""
+  for i in $(seq 1 32); do
+      OUTPUTS="$OUTPUTS -re -stream_loop -1 -i media/channel_${i}.ts -c copy -f mpegts udp://239.100.1.${i}:5000?pkt_size=1128&ttl=16&localaddr=172.16.0.92"
+  done
 
-#### Part 2: Connect Clients Across 3 Physical PCs (Step 2)
-Distribute 32 groups across 3 physical PCs (each PC displays 1 live video window and joins remaining groups in background):
+  # Launch single FFmpeg multi-channel transmitter
+  ffmpeg -hide_banner $OUTPUTS
+  ```
 
+* **Method B (Single Asset Duplicated to 32 Multicast Groups):**
+  A lightweight alternative that streams a single file duplicated across 32 groups:
+  ```bash
+  OUTPUTS=""
+  for i in $(seq 1 32); do
+      OUTPUTS="$OUTPUTS -c copy -f mpegts udp://239.100.1.$i:5000?pkt_size=1128&ttl=16&localaddr=172.16.0.92"
+  done
+
+  ffmpeg -hide_banner -re -stream_loop -1 \
+      -i media/sample_1080p_8mbps.ts \
+      $OUTPUTS
+  ```
+
+#### Part 2: Connect Clients Across Testbed (Step 2)
+
+##### Alternative A: Across 3 Linux PCs
 * **On Client PC 1 (LAN 1, IP `192.168.1.101`):**
   ```bash
   # 1 live display window:
@@ -259,23 +340,39 @@ Distribute 32 groups across 3 physical PCs (each PC displays 1 live video window
   python3 tools/igmp_client.py --interface-ip 192.168.1.103 --groups 239.100.1.24-32 --hold-sec 600 &
   ```
 
-* **On Windows PC Client (PowerShell Automated Script):**
-  If any of your client PCs run Windows 10/11:
-  ```powershell
-  # 1. Interactive Menu (Play, Scale 32 channels, Churn, Firewall setup):
+##### Alternative B: On Windows PC Client ([`scripts/windows/run_client.ps1`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/windows/run_client.ps1))
+The Windows automation suite provides four flexible operating options:
+
+* **Option 1: Interactive Menu (Click-and-Run):**
+  ```cmd
   .\scripts\windows\run_client.bat
-  # or in PowerShell:
-  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1
+  ```
+  *(Displays an interactive numbered menu to Play, Scale, Churn, or Setup firewall/routes)*.
 
-  # 2. Command-Line Automations:
-  # Join all 32 channels concurrently (Ultra-low RAM socket engine, < 15MB RAM):
-  .\scripts\windows\run_client.ps1 -Mode Scale -Count 32
+* **Option 2: Ultra-Low RAM Scale Engine (< 15 MB RAM Total — Zero OOM Risk):**
+  Joins all 32 channels simultaneously via native `.NET` UDP Sockets (`System.Net.Sockets.UdpClient`), joins groups on the router, samples incoming UDP packets, and provides a live CLI packet monitor without launching 32 heavy video decoder processes:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode Scale -Count 32
+  ```
 
-  # Play live video for Channel 7:
-  .\scripts\windows\run_client.ps1 -Channel 7
+* **Option 3: Scale GUI Multi-Channel Video Grid (Visual Proof):**
+  Spawns $N$ video player windows (FFplay/VLC) tiled automatically into an optimal desktop grid layout (e.g. 2x2, 3x3, 4x4, or 8x4).
+  - **Audio Muting Feature**: Channel 1 audio remains active, while Channels 2..$N$ are automatically muted (`-an` / `--no-audio`) to avoid overlapping audio noise:
+  ```powershell
+  # Open 4 GUI channels in a 2x2 grid:
+  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode ScaleGUI -Count 4
 
-  # Run Rapid Channel Churn / Zapping test:
-  .\scripts\windows\run_client.ps1 -Mode Churn -Count 32 -DelayMs 500
+  # Open 9 GUI channels in a 3x3 grid:
+  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode ScaleGUI -Count 9
+
+  # Open all 32 GUI channels in an 8x4 grid:
+  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode Scale -Count 32 -Gui
+  ```
+
+* **Option 4: Rapid Channel Churn / Zapping Benchmark:**
+  Rapidly zaps across channels 1..32 with configurable dwell times, measuring join-to-data reception for each channel:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode Churn -Count 32 -DelayMs 200 -Cycles 5
   ```
 
 #### Part 3: Inject 250 qps Query Stress from Server WAN
@@ -330,13 +427,23 @@ Screenshot of router's `dhcp.leases` table displaying active client leases grant
 
 ---
 
-## 3. Teardown & Post-Test Cleanup Commands
+## 4. Teardown & Post-Test Cleanup Commands
 
-### On Client PCs:
+### On Linux Client PCs:
 Terminate background players and IGMP client sockets:
 ```bash
 killall ffplay 2>/dev/null || true
 killall python3 2>/dev/null || true
+```
+
+### On Windows Client PC:
+Stop all running media client processes (FFplay / VLC):
+```powershell
+# Using the automation script:
+.\scripts\windows\run_client.ps1 -Mode Stop
+
+# Or via Command Prompt:
+taskkill /f /im ffplay.exe /im vlc.exe
 ```
 
 ### On Server Host:
@@ -351,3 +458,22 @@ Clear temporary packet filters or flush dynamic snooping records:
 # Verify MDB returns to idle state:
 bridge mdb show
 ```
+
+---
+
+## 5. Troubleshooting & Frequently Asked Questions
+
+### 1. PowerShell ParserError: Variable reference is not valid (':')
+* **Cause**: In PowerShell string interpolation, `:` is reserved for variable scope resolution (e.g. `$global:var`). Writing `"$group:$Port"` causes PowerShell to interpret `$group:` as a scope prefix.
+* **Fix**: Use `${group}:${Port}` or ``$group`:$Port``. This has been resolved in the latest [`scripts/windows/run_client.ps1`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/windows/run_client.ps1).
+
+### 2. Windows Client receives no video or displays black screen
+* **Cause 1 (Firewall)**: Windows Defender Firewall blocks inbound UDP multicast packets by default. Run `.\scripts\windows\run_client.ps1 -Mode Setup` as Administrator.
+* **Cause 2 (Wi-Fi vs Ethernet Routing)**: When both Wi-Fi and Ethernet are connected, Windows routes IGMP Joins out the Wi-Fi interface. Add a static route via Ethernet:
+  ```powershell
+  route add 224.0.0.0 mask 240.0.0.0 <Local-LAN-IP> metric 1
+  ```
+
+### 3. Client video experiences pixelation, macroblocking, or `PES packet size mismatch`
+* **Cause (MTU Fragmentation)**: When streaming through an interface with MTU $< 1344$ (e.g. MTU `1280`), standard 1316-byte TS packets get fragmented. Router hardware accelerators often drop fragment #2.
+* **Fix**: Ensure server streaming uses `pkt_size=1128` (or increase transmitter MTU to `1500` via `sudo ip link set dev eno1 mtu 1500`). On client side, use `buffer_size=4194304&overrun_nonfatal=1`.

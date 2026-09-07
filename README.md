@@ -138,6 +138,7 @@ iptv_multicast_integration_lab/
 ├── media/                    # MPEG-TS video assets (sample_1080p_8mbps.ts)
 ├── state/                    # Runtime state (PIDs, leases, topology_state.env)
 ├── docs/
+│   ├── MANUAL_TEST_GUIDE.md  # Comprehensive step-by-step physical testbed manual verification guide (7 TCs)
 │   ├── SHELL_STYLE.md        # Strict mode & safety guidelines
 │   └── TEST_PLAN.md          # Test plan & compliance matrix
 ├── tools/                    # Standalone Python 3 Multicast & IGMP tools
@@ -307,6 +308,10 @@ sudo ./scripts/client_dhcp.sh release all
 ### Step 5: Testing with External Windows Client (VLC / FFplay)
 
 When testing IPTV playback on a separate Windows PC connected to the router's LAN port:
+
+> [!TIP]
+> **Windows Automation Script Available**:
+> You can simply run [`scripts/windows/run_client.bat`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/windows/run_client.bat) or [`scripts/windows/run_client.ps1`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/windows/run_client.ps1) on Windows to automate Firewall & route configuration, single-channel playback, 32-group scale tests, and rapid channel churn. See [`docs/MANUAL_TEST_GUIDE.md`](file:///home/dddat/workspace/iptv_multicast_integration_lab/docs/MANUAL_TEST_GUIDE.md) for detailed test procedures.
 
 1. **Start the IPTV Server on Linux**:
    ```bash
