@@ -9,16 +9,17 @@
   1. Interactive GUI Playback: Watch any channel (1..N) via FFplay or VLC.
   2. Ultra-Lightweight Scale 32 Groups: Native .NET Sockets (< 15 MB RAM total)
      with real-time packet & bitrate monitor.
-  3. Headless 32 Channels FFplay: Multi-process playback with low-RAM buffer.
-  4. Rapid Channel Churn Test: High-speed channel zapping / leave & join benchmarking.
-  5. One-Click Setup: Automatic Windows Defender Firewall & Multicast Route configuration.
+  3. Scale GUI Multi-Channel Playback: Open N channels with GUI video grid (Combine Option 1 & 2).
+  4. Headless 32 Channels FFplay: Multi-process playback with low-RAM buffer.
+  5. Rapid Channel Churn Test: High-speed channel zapping / leave & join benchmarking.
+  6. One-Click Setup: Automatic Windows Defender Firewall & Multicast Route configuration.
 ================================================================================
 #>
 
 [CmdletBinding(DefaultParameterSetName = "Default")]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("Interactive", "Play", "Scale", "ScaleFFplay", "Churn", "Setup", "Stop", "Status")]
+    [ValidateSet("Interactive", "Play", "Scale", "ScaleGUI", "PlayScale", "ScalePlay", "ScaleFFplay", "Churn", "Setup", "Stop", "Status")]
     [string]$Mode = "Interactive",
 
     [Parameter(Position = 1)]
@@ -30,7 +31,9 @@ param(
     [string]$LocalIP = "",
     [int]$DelayMs = 1000,
     [int]$Cycles = 30,
+    [switch]$Gui,
     [switch]$NoGui,
+    [switch]$AllAudio,
     [switch]$Help
 )
 
@@ -39,7 +42,7 @@ param(
 # ------------------------------------------------------------------------------
 
 function Write-LabBanner {
-    Clear-Host
+    try { Clear-Host } catch {}
     Write-Host "==================================================================" -ForegroundColor Cyan
     Write-Host "       IPTV MULTICAST TEST LAB - WINDOWS CLIENT AUTOMATION        " -ForegroundColor Yellow -NoNewline
     Write-Host " v2.0" -ForegroundColor Green
@@ -169,7 +172,7 @@ function Start-ChannelPlay {
     $ffplay = Find-PlayerBinary "ffplay"
     $vlc = Find-PlayerBinary "vlc"
 
-    Write-Host "`n[PLAY] Opening Channel $ChNumber ($group:$Port) on $TargetIP..." -ForegroundColor Cyan
+    Write-Host "`n[PLAY] Opening Channel $ChNumber (${group}:${Port}) on $TargetIP..." -ForegroundColor Cyan
 
     if ($ffplay) {
         $url = "udp://${group}:${Port}?localaddr=${TargetIP}&buffer_size=1048576&overrun_nonfatal=1"
@@ -204,7 +207,7 @@ function Start-ScaleSocketEngine {
     Write-Host "==================================================================" -ForegroundColor Cyan
     Write-Host "Local Interface:  $TargetIP" -ForegroundColor White
     Write-Host "Channel Range:    1 -> $TotalCount ($MulticastBase" -NoNewline
-    Write-Host "1..$TotalCount:$Port)" -ForegroundColor Yellow
+    Write-Host "1..${TotalCount}:${Port})" -ForegroundColor Yellow
     Write-Host "Memory Footprint: < 15 MB RAM total (Zero OOM risk)" -ForegroundColor Green
     Write-Host "Press 'Q' or 'Ctrl+C' to Leave all groups and exit" -ForegroundColor DarkYellow
     Write-Host "==================================================================" -ForegroundColor Cyan
@@ -293,6 +296,161 @@ function Start-ScaleSocketEngine {
             } catch {}
         }
         Write-Host "[CLEANUP] All multicast memberships dropped cleanly. Router updated." -ForegroundColor Green
+    }
+}
+
+# ------------------------------------------------------------------------------
+# SCALE N CHANNELS: MULTI-CHANNEL GUI PLAYBACK (COMBINED OPTION 1 & 2)
+# ------------------------------------------------------------------------------
+
+function Start-ScaleGUIPlayEngine {
+    param(
+        [int]$TotalCount = 4,
+        [string]$TargetIP,
+        [switch]$AllAudio
+    )
+
+    $ffplay = Find-PlayerBinary "ffplay"
+    $vlc = Find-PlayerBinary "vlc"
+
+    if (-not $ffplay -and -not $vlc) {
+        Write-Host "[ERROR] Neither FFplay nor VLC was found on this Windows PC!" -ForegroundColor Red
+        Write-Host "        Please install one of the following via Windows Terminal (winget):" -ForegroundColor Yellow
+        Write-Host "          winget install Gyan.FFmpeg" -ForegroundColor White
+        Write-Host "          winget install VideoLAN.VLC" -ForegroundColor White
+        return
+    }
+
+    $player = if ($ffplay) { $ffplay } else { $vlc }
+    $playerName = if ($ffplay) { "FFplay" } else { "VLC" }
+
+    Write-Host "`n==================================================================" -ForegroundColor Cyan
+    Write-Host "   SCALE GUI TEST: OPEN $TotalCount CHANNELS WITH GUI ($playerName)   " -ForegroundColor Yellow
+    Write-Host "==================================================================" -ForegroundColor Cyan
+    Write-Host "Local Interface:  $TargetIP" -ForegroundColor White
+    Write-Host "Channel Range:    1 -> $TotalCount ($MulticastBase" -NoNewline
+    Write-Host "1..${TotalCount}:${Port})" -ForegroundColor Yellow
+    Write-Host "Player Engine:    $playerName ($player)" -ForegroundColor Green
+    if (-not $AllAudio -and $TotalCount -gt 1) {
+        Write-Host "Audio Policy:     Channel 1 audio active, Channels 2..$TotalCount muted (avoids noise)" -ForegroundColor DarkGray
+    } else {
+        Write-Host "Audio Policy:     Audio active on all channels" -ForegroundColor Yellow
+    }
+    Write-Host "==================================================================" -ForegroundColor Cyan
+
+    # Determine screen working area for automatic grid tiling
+    $screenWidth = 1920
+    $screenHeight = 1080
+    $screenX = 0
+    $screenY = 0
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+        $screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        if ($screen -and $screen.Width -gt 0 -and $screen.Height -gt 0) {
+            $screenWidth = [int]$screen.Width
+            $screenHeight = [int]$screen.Height
+            $screenX = [int]$screen.X
+            $screenY = [int]$screen.Y
+        }
+    } catch {}
+
+    # Calculate optimal grid layout (columns x rows)
+    if ($TotalCount -le 1) { $cols = 1; $rows = 1 }
+    elseif ($TotalCount -le 2) { $cols = 2; $rows = 1 }
+    elseif ($TotalCount -le 4) { $cols = 2; $rows = 2 }
+    elseif ($TotalCount -le 6) { $cols = 3; $rows = 2 }
+    elseif ($TotalCount -le 8) { $cols = 4; $rows = 2 }
+    elseif ($TotalCount -le 9) { $cols = 3; $rows = 3 }
+    elseif ($TotalCount -le 12) { $cols = 4; $rows = 3 }
+    elseif ($TotalCount -le 16) { $cols = 4; $rows = 4 }
+    elseif ($TotalCount -le 20) { $cols = 5; $rows = 4 }
+    elseif ($TotalCount -le 24) { $cols = 6; $rows = 4 }
+    elseif ($TotalCount -le 32) { $cols = 8; $rows = 4 }
+    else {
+        $cols = [Math]::Ceiling([Math]::Sqrt($TotalCount * (16 / 9)))
+        $rows = [Math]::Ceiling($TotalCount / $cols)
+    }
+
+    $cellWidth = [int][Math]::Floor($screenWidth / $cols)
+    $cellHeight = [int][Math]::Floor($screenHeight / $rows)
+    $dispWidth = [Math]::Max(140, [int]($cellWidth - 16))
+    $dispHeight = [Math]::Max(90, [int]($cellHeight - 38))
+
+    Write-Host "`n[GUI GRID] Layout: ${cols}x${rows} grid | Cell: ${cellWidth}x${cellHeight}px (Video: ~${dispWidth}x${dispHeight}px)" -ForegroundColor DarkCyan
+
+    $pids = @()
+    Write-Host "`n[LAUNCHING $TotalCount GUI PLAYER INSTANCES...]" -ForegroundColor Cyan
+
+    for ($i = 1; $i -le $TotalCount; $i++) {
+        $group = "$MulticastBase$i"
+        $idx = $i - 1
+        $c = $idx % $cols
+        $r = [int][Math]::Floor($idx / $cols)
+        $posX = $screenX + ($c * $cellWidth)
+        $posY = $screenY + ($r * $cellHeight)
+        $chPadded = "{0:D2}" -f $i
+
+        try {
+            if ($ffplay) {
+                $url = "udp://${group}:${Port}?localaddr=${TargetIP}&buffer_size=524288&overrun_nonfatal=1"
+                $title = "IPTV Ch $i ($group)"
+                $audioFlag = if ($i -gt 1 -and -not $AllAudio) { "-an" } else { "" }
+                $argList = "-window_title `"$title`" -x $dispWidth -y $dispHeight -left $posX -top $posY $audioFlag `"$url`""
+                $proc = Start-Process -FilePath $ffplay -ArgumentList $argList -PassThru
+            } else {
+                $mcastUrl = "udp://@${group}:${Port}"
+                $title = "IPTV Ch $i ($group)"
+                $audioFlag = if ($i -gt 1 -and -not $AllAudio) { "--no-audio" } else { "" }
+                $argList = "`"$mcastUrl`" --mcast-intf $TargetIP --no-one-instance --meta-title `"$title`" --width $dispWidth --height $dispHeight --video-x $posX --video-y $posY $audioFlag"
+                $proc = Start-Process -FilePath $vlc -ArgumentList $argList -PassThru
+            }
+
+            $pids += $proc.Id
+            Write-Host "  [SPAWN $chPadded/$TotalCount] $playerName PID $($proc.Id) -> $group`:$Port (Grid $c,$r @ ${posX},${posY})" -ForegroundColor Gray
+        } catch {
+            Write-Host "  [SPAWN $chPadded/$TotalCount] FAILED for $group`:$Port ($($_.Exception.Message))" -ForegroundColor Red
+        }
+
+        # Small stagger to keep launch smooth
+        Start-Sleep -Milliseconds 80
+    }
+
+    $activeCount = $pids.Count
+    Write-Host "`n[SUCCESS] Successfully spawned $activeCount GUI player window(s)!" -ForegroundColor Green
+    Write-Host "          Press 'Q' or Enter in this terminal to stop all GUI players..." -ForegroundColor Yellow
+
+    try {
+        while ($true) {
+            $keyHit = $false
+            try {
+                if ([Console]::KeyAvailable) {
+                    $key = [Console]::ReadKey($true)
+                    if ($key.Key -eq [ConsoleKey]::Q -or $key.Key -eq [ConsoleKey]::Enter -or $key.Key -eq [ConsoleKey]::Escape) {
+                        $keyHit = $true
+                    }
+                }
+            } catch {
+                $keyHit = $true
+            }
+
+            if ($keyHit) { break }
+
+            $alive = @($pids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+            if ($alive.Count -eq 0) {
+                Write-Host "`n[INFO] All GUI player windows were closed." -ForegroundColor DarkGray
+                break
+            }
+
+            $timeStr = (Get-Date).ToString("HH:mm:ss")
+            Write-Host "`r[$timeStr] Active GUI Windows: $($alive.Count)/$TotalCount | Press 'Q' or Enter to stop all" -ForegroundColor Yellow -NoNewline
+            Start-Sleep -Milliseconds 500
+        }
+    } finally {
+        Write-Host "`n`n[CLEANUP] Stopping spawned GUI player processes..." -ForegroundColor Yellow
+        foreach ($pidToKill in $pids) {
+            Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host "[DONE] All GUI player processes stopped." -ForegroundColor Green
     }
 }
 
@@ -424,17 +582,50 @@ function Stop-AllClients {
 # MAIN EXECUTION DISPATCHER
 # ------------------------------------------------------------------------------
 
+if ($Help) {
+    Write-LabBanner
+    Write-Host "Usage: .\run_client.ps1 [-Mode <Mode>] [-Channel <int>] [-Count <int>] [-Gui] [-Port <int>]" -ForegroundColor Yellow
+    Write-Host "`nModes:" -ForegroundColor Cyan
+    Write-Host "  Interactive   - Open interactive numbered menu (Default)"
+    Write-Host "  Play          - Open single channel GUI video (e.g. -Channel 1)"
+    Write-Host "  Scale         - Scale join N multicast groups via .NET sockets (Default: 32)"
+    Write-Host "  ScaleGUI      - Open N multicast channels in GUI player grid (Combine Option 1 & 2)"
+    Write-Host "  ScaleFFplay   - Scale run N headless background FFplay receivers"
+    Write-Host "  Churn         - High-speed channel zapping / join & leave benchmark"
+    Write-Host "  Setup         - Configure Windows Defender Firewall & Multicast route (Admin)"
+    Write-Host "  Status        - Display local network interface and player status"
+    Write-Host "  Stop          - Stop all active client players (ffplay / vlc)"
+    Write-Host "`nExamples:" -ForegroundColor Cyan
+    Write-Host "  .\run_client.ps1 -Mode ScaleGUI -Count 4"
+    Write-Host "  .\run_client.ps1 -Mode Scale -Count 32 -Gui"
+    Write-Host "  .\run_client.ps1 -Mode Scale -Count 32"
+    Write-Host "  .\run_client.ps1 -Channel 5"
+    exit 0
+}
+
 if (-not $LocalIP) {
     $LocalIP = Get-DefaultLocalIP
 }
 
 switch ($Mode) {
     "Play" {
-        Start-ChannelPlay -ChNumber $Channel -TargetIP $LocalIP
+        if ($Count -gt 1 -and $PSBoundParameters.ContainsKey('Count')) {
+            Start-ScaleGUIPlayEngine -TotalCount $Count -TargetIP $LocalIP -AllAudio:$AllAudio
+        } else {
+            Start-ChannelPlay -ChNumber $Channel -TargetIP $LocalIP
+        }
         exit 0
     }
     "Scale" {
-        Start-ScaleSocketEngine -TotalCount $Count -TargetIP $LocalIP
+        if ($Gui) {
+            Start-ScaleGUIPlayEngine -TotalCount $Count -TargetIP $LocalIP -AllAudio:$AllAudio
+        } else {
+            Start-ScaleSocketEngine -TotalCount $Count -TargetIP $LocalIP
+        }
+        exit 0
+    }
+    { $_ -in "ScaleGUI", "PlayScale", "ScalePlay", "MultiPlay" } {
+        Start-ScaleGUIPlayEngine -TotalCount $Count -TargetIP $LocalIP -AllAudio:$AllAudio
         exit 0
     }
     "ScaleFFplay" {
@@ -481,71 +672,80 @@ switch ($Mode) {
             Write-Host "  [2] " -NoNewline -ForegroundColor Yellow
             Write-Host "Scale Test: Join 32 Channels (Ultra-Light Socket Engine, < 15MB RAM)" -ForegroundColor White
             Write-Host "  [3] " -NoNewline -ForegroundColor Yellow
-            Write-Host "Scale Test: Run 32 Headless FFplay Processes" -ForegroundColor White
+            Write-Host "Scale GUI: Play N Channels with Video Grid (Combine Option 1 & 2)" -ForegroundColor White
             Write-Host "  [4] " -NoNewline -ForegroundColor Yellow
-            Write-Host "Rapid Channel Churn / Zapping Benchmark (1 -> 32)" -ForegroundColor White
+            Write-Host "Scale Test: Run 32 Headless FFplay Processes" -ForegroundColor White
             Write-Host "  [5] " -NoNewline -ForegroundColor Yellow
-            Write-Host "Configure Firewall & Multicast Route (Administrator)" -ForegroundColor White
+            Write-Host "Rapid Channel Churn / Zapping Benchmark (1 -> 32)" -ForegroundColor White
             Write-Host "  [6] " -NoNewline -ForegroundColor Yellow
-            Write-Host "Change Local Network IP (Current: $LocalIP)" -ForegroundColor White
+            Write-Host "Configure Firewall & Multicast Route (Administrator)" -ForegroundColor White
             Write-Host "  [7] " -NoNewline -ForegroundColor Yellow
+            Write-Host "Change Local Network IP (Current: $LocalIP)" -ForegroundColor White
+            Write-Host "  [8] " -NoNewline -ForegroundColor Yellow
             Write-Host "Stop All Background Clients (kill ffplay/vlc)" -ForegroundColor White
             Write-Host "  [0] " -NoNewline -ForegroundColor Yellow
             Write-Host "Exit" -ForegroundColor Gray
             Write-Host "==================================================================" -ForegroundColor Cyan
 
-            $choice = Read-Host "Select an option [0-7]"
+            $choice = Read-Host "Select an option [0-8]"
             switch ($choice) {
                 "1" {
                     $chInput = Read-Host "Enter channel number to play [1-32] (Default: 1)"
                     if (-not $chInput) { $chInput = 1 }
                     Start-ChannelPlay -ChNumber ([int]$chInput) -TargetIP $LocalIP
                     Write-Host "`nPress Enter to return to menu..." -ForegroundColor DarkGray
-                    [Console]::ReadLine() | Out-Null
+                    try { [Console]::ReadLine() | Out-Null } catch {}
                 }
                 "2" {
                     $cntInput = Read-Host "Enter number of channels to join (Default: 32)"
                     if (-not $cntInput) { $cntInput = 32 }
                     Start-ScaleSocketEngine -TotalCount ([int]$cntInput) -TargetIP $LocalIP
                     Write-Host "`nPress Enter to return to menu..." -ForegroundColor DarkGray
-                    [Console]::ReadLine() | Out-Null
+                    try { [Console]::ReadLine() | Out-Null } catch {}
                 }
-                "3" {
+                { $_ -in "3", "12", "1+2", "c", "gui" } {
+                    $cntInput = Read-Host "Enter number of GUI channels to open [1..32] (Default: 4)"
+                    if (-not $cntInput) { $cntInput = 4 }
+                    Start-ScaleGUIPlayEngine -TotalCount ([int]$cntInput) -TargetIP $LocalIP
+                    Write-Host "`nPress Enter to return to menu..." -ForegroundColor DarkGray
+                    try { [Console]::ReadLine() | Out-Null } catch {}
+                }
+                "4" {
                     $cntInput = Read-Host "Enter number of FFplay processes (Default: 32)"
                     if (-not $cntInput) { $cntInput = 32 }
                     Start-ScaleFFplayEngine -TotalCount ([int]$cntInput) -TargetIP $LocalIP
                     Write-Host "`nPress Enter to return to menu..." -ForegroundColor DarkGray
-                    [Console]::ReadLine() | Out-Null
+                    try { [Console]::ReadLine() | Out-Null } catch {}
                 }
-                "4" {
+                "5" {
                     $cntInput = Read-Host "Enter number of channels for churn (Default: 32)"
                     if (-not $cntInput) { $cntInput = 32 }
                     $delayInput = Read-Host "Enter zapping interval in ms (Default: 500)"
                     if (-not $delayInput) { $delayInput = 500 }
                     Start-ChannelChurnTest -TotalCount ([int]$cntInput) -NumCycles 5 -Delay ([int]$delayInput) -TargetIP $LocalIP
                     Write-Host "`nPress Enter to return to menu..." -ForegroundColor DarkGray
-                    [Console]::ReadLine() | Out-Null
-                }
-                "5" {
-                    Invoke-LabSetup -TargetIP $LocalIP
-                    Write-Host "`nPress Enter to return to menu..." -ForegroundColor DarkGray
-                    [Console]::ReadLine() | Out-Null
+                    try { [Console]::ReadLine() | Out-Null } catch {}
                 }
                 "6" {
+                    Invoke-LabSetup -TargetIP $LocalIP
+                    Write-Host "`nPress Enter to return to menu..." -ForegroundColor DarkGray
+                    try { [Console]::ReadLine() | Out-Null } catch {}
+                }
+                "7" {
                     $newIp = Read-Host "Enter new local LAN IPv4 address"
                     if ($newIp) { $LocalIP = $newIp }
                 }
-                "7" {
+                { $_ -in "8", "stop" } {
                     Stop-AllClients
                     Write-Host "`nPress Enter to return to menu..." -ForegroundColor DarkGray
-                    [Console]::ReadLine() | Out-Null
+                    try { [Console]::ReadLine() | Out-Null } catch {}
                 }
                 "0" {
                     Write-Host "Goodbye!" -ForegroundColor Green
                     exit 0
                 }
                 default {
-                    Write-Host "Invalid choice. Please select 0 to 7." -ForegroundColor Red
+                    Write-Host "Invalid choice. Please select 0 to 8." -ForegroundColor Red
                     Start-Sleep -Seconds 1
                 }
             }
