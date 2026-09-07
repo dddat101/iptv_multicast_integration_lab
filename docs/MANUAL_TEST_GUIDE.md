@@ -259,6 +259,25 @@ Distribute 32 groups across 3 physical PCs (each PC displays 1 live video window
   python3 tools/igmp_client.py --interface-ip 192.168.1.103 --groups 239.100.1.24-32 --hold-sec 600 &
   ```
 
+* **On Windows PC Client (PowerShell Automated Script):**
+  If any of your client PCs run Windows 10/11:
+  ```powershell
+  # 1. Interactive Menu (Play, Scale 32 channels, Churn, Firewall setup):
+  .\scripts\windows\run_client.bat
+  # or in PowerShell:
+  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1
+
+  # 2. Command-Line Automations:
+  # Join all 32 channels concurrently (Ultra-low RAM socket engine, < 15MB RAM):
+  .\scripts\windows\run_client.ps1 -Mode Scale -Count 32
+
+  # Play live video for Channel 7:
+  .\scripts\windows\run_client.ps1 -Channel 7
+
+  # Run Rapid Channel Churn / Zapping test:
+  .\scripts\windows\run_client.ps1 -Mode Churn -Count 32 -DelayMs 500
+  ```
+
 #### Part 3: Inject 250 qps Query Stress from Server WAN
 While 32 groups are active, inject 250 qps Specific Queries from Server (`eno1`) into Router WAN:
 ```bash
