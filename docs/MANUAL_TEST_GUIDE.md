@@ -290,10 +290,11 @@ On Server Host (`Latitude-E6540`), stream all 32 channels. You can choose betwee
   ```bash
   cd /home/dddat/workspace/iptv_multicast_integration_lab
 
-  # Build 32-input, 32-output argument list
+  # Build 32-input, 32-output argument list with explicit stream mapping
   OUTPUTS=""
   for i in $(seq 1 32); do
-      OUTPUTS="$OUTPUTS -re -stream_loop -1 -i media/channel_${i}.ts -c copy -f mpegts udp://239.100.1.${i}:5000?pkt_size=1128&ttl=16&localaddr=172.16.0.92"
+      idx=$((i - 1))
+      OUTPUTS="$OUTPUTS -re -stream_loop -1 -i media/channel_${i}.ts -map ${idx}:v -map ${idx}:a -c copy -f mpegts udp://239.100.1.${i}:5000?pkt_size=1128&ttl=16&localaddr=172.16.0.92"
   done
 
   # Launch single FFmpeg multi-channel transmitter
