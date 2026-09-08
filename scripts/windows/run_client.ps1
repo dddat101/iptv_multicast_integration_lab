@@ -553,9 +553,10 @@ function Start-ChannelChurnTest {
 
             $statusText = if ($pkts -gt 0) { "STREAM OK ($pkts pkts)" } else { "JOINED (No UDP)" }
             $statusColor = if ($pkts -gt 0) { "Green" } else { "Yellow" }
-            Write-Host "  ZAP -> Channel {0:D2} ($groupStr) : " -f $i -NoNewline -ForegroundColor Gray
+            $chPadded = "{0:D2}" -f $i
+            Write-Host "  ZAP -> Channel $chPadded ($groupStr) : " -NoNewline -ForegroundColor Gray
             Write-Host "$statusText " -ForegroundColor $statusColor -NoNewline
-            Write-Host "(${sw.ElapsedMilliseconds}ms)" -ForegroundColor DarkGray
+            Write-Host "($($sw.ElapsedMilliseconds)ms)" -ForegroundColor DarkGray
         }
     }
 
@@ -584,7 +585,7 @@ function Stop-AllClients {
 
 if ($Help) {
     Write-LabBanner
-    Write-Host "Usage: .\run_client.ps1 [-Mode <Mode>] [-Channel <int>] [-Count <int>] [-Gui] [-Port <int>]" -ForegroundColor Yellow
+    Write-Host "Usage: .\run_client.ps1 [-Mode <Mode>] [-Channel <int>] [-Count <int>] [-LocalIP <ip>] [-Gui] [-Port <int>]" -ForegroundColor Yellow
     Write-Host "`nModes:" -ForegroundColor Cyan
     Write-Host "  Interactive   - Open interactive numbered menu (Default)"
     Write-Host "  Play          - Open single channel GUI video (e.g. -Channel 1)"
@@ -596,8 +597,9 @@ if ($Help) {
     Write-Host "  Status        - Display local network interface and player status"
     Write-Host "  Stop          - Stop all active client players (ffplay / vlc)"
     Write-Host "`nExamples:" -ForegroundColor Cyan
-    Write-Host "  .\run_client.ps1 -Mode ScaleGUI -Count 4"
-    Write-Host "  .\run_client.ps1 -Mode Scale -Count 32 -Gui"
+    Write-Host "  .\run_client.ps1 -LocalIP 192.168.1.100"
+    Write-Host "  .\run_client.ps1 -Mode ScaleGUI -Count 4 -LocalIP 192.168.1.100"
+    Write-Host "  .\run_client.ps1 -Mode Scale -Count 32 -Gui -LocalIP 192.168.1.100"
     Write-Host "  .\run_client.ps1 -Mode Scale -Count 32"
     Write-Host "  .\run_client.ps1 -Channel 5"
     exit 0
