@@ -289,15 +289,11 @@ On Server Host (`Latitude-E6540`), stream all 32 channels. You can choose betwee
   Each channel streams its own unique video (`media/channel_1.ts` to `media/channel_32.ts`), displaying individual channel numbers, HUD effects, and unique tone frequencies:
   ```bash
   cd /home/dddat/workspace/iptv_multicast_integration_lab
-
-  # Build 32-input, 32-output argument list with explicit stream mapping
   OUTPUTS=""
   for i in $(seq 1 32); do
       idx=$((i - 1))
       OUTPUTS="$OUTPUTS -re -stream_loop -1 -i media/channel_${i}.ts -map ${idx}:v -map ${idx}:a -c copy -f mpegts udp://239.100.1.${i}:5000?pkt_size=1128&ttl=16&localaddr=172.16.0.92"
   done
-
-  # Launch single FFmpeg multi-channel transmitter
   ffmpeg -hide_banner $OUTPUTS
   ```
 
@@ -308,7 +304,6 @@ On Server Host (`Latitude-E6540`), stream all 32 channels. You can choose betwee
   for i in $(seq 1 32); do
       OUTPUTS="$OUTPUTS -c copy -f mpegts udp://239.100.1.$i:5000?pkt_size=1128&ttl=16&localaddr=172.16.0.92"
   done
-
   ffmpeg -hide_banner -re -stream_loop -1 \
       -i media/sample_1080p_8mbps.ts \
       $OUTPUTS
