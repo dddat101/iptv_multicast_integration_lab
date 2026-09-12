@@ -29,13 +29,28 @@ DUT_COMMANDS=(
 
 usage() {
     cat <<'USAGE'
+Description:
+  Collects Linux multicast routing, IGMP snooping, bridge MDB tables,
+  and kernel multicast socket parameters from the DUT router via SSH,
+  or prints diagnostic commands for serial/UART console inspection.
+
 Usage:
-  ./scripts/dut_collector.sh [collect|print-cmds|parse <logfile>]
+  ./scripts/dut_collector.sh [command] [options]
 
 Commands:
-  collect      Connect to DUT via SSH and dump diagnostic evidence to logs/
-  print-cmds   Print standard router diagnostic commands (for manual UART/Serial use)
-  parse <file> Parse an existing diagnostic log to evaluate multicast and snooping state
+  collect        Connect to DUT via SSH, execute commands, and save to logs/ [Default]
+  print-cmds     Print standard router diagnostic commands (for manual UART/Serial use)
+  parse <file>   Parse an existing diagnostic log to evaluate multicast and snooping state
+  -h, --help     Show this help message
+
+Examples:
+  ./scripts/dut_collector.sh collect
+  ./scripts/dut_collector.sh print-cmds
+  ./scripts/dut_collector.sh parse logs/dut_diagnostics_20260912_120000.log
+
+Suggested Next Steps:
+  - Run benchmark suite:   sudo ./scripts/benchmark_suite.sh all
+  - Inspect lab state:     ./scripts/show_state.sh
 USAGE
 }
 
@@ -140,6 +155,13 @@ parse_dut_log() {
 }
 
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
     local action="${1:-collect}"
 
@@ -159,6 +181,10 @@ main() {
             local target_log="${2:-}"
             [[ -n "${target_log}" ]] || die "Usage: ./scripts/dut_collector.sh parse <logfile>"
             parse_dut_log "${target_log}"
+            ;;
+        -h|--help)
+            usage
+            exit 0
             ;;
         *)
             usage

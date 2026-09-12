@@ -13,10 +13,37 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
     cat <<'USAGE'
+Description:
+  Automated PCAP verification tool for IPTV multicast testing.
+  Parses PCAP capture files using tshark to verify IGMPv2 Join/Leave signaling,
+  MPEG-TS multicast data packet reception, join-to-first-data latency,
+  IP ToS/DSCP markings, and Don't Fragment (DF) flags.
+
 Usage:
-  ./scripts/verify_capture.sh [summary|latency|full] [pcap_file]
+  ./scripts/verify_capture.sh [mode] [pcap_file] [multicast_group]
+  ./scripts/verify_capture.sh -h | --help
+
+Modes:
+  full, summary, compliance   Perform full compliance verification (Join, Leave, Data, Latency) [Default]
+  latency                     Calculate IGMP Join-to-first-data latency specifically
+
+Arguments:
+  pcap_file                   Path to .pcap file (defaults to latest capture in captures/)
+  multicast_group             Target multicast group IP (defaults to MCAST_GROUP or auto-detected)
+  -h, --help                  Show this help message
+
+Examples:
+  ./scripts/verify_capture.sh
+  ./scripts/verify_capture.sh full
+  ./scripts/verify_capture.sh latency captures/lan_20260912_120000.pcap
+  ./scripts/verify_capture.sh full captures/lan_20260912_120000.pcap 239.10.10.10
+
+Suggested Next Steps:
+  - Run scenario test:      sudo ./scripts/scenario.sh
+  - Run benchmark suite:    sudo ./scripts/benchmark_suite.sh all
 USAGE
 }
+
 
 resolve_pcap() {
     local candidate="${1:-}"
@@ -160,12 +187,26 @@ verify_full() {
 
 
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
     local mode="${1:-full}"
     local arg2="${2:-}"
     local arg3="${3:-}"
     local pcap_file=""
     local group=""
+
+    case "${mode}" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+    esac
 
     if [[ -f "${arg2}" ]]; then
         pcap_file="${arg2}"
@@ -177,6 +218,7 @@ main() {
         pcap_file="$(resolve_pcap "${arg2}")"
         group="${arg3}"
     fi
+
 
     case "${mode}" in
         summary|full|compliance)

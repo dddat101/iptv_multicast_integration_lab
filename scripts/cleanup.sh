@@ -14,11 +14,14 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
     cat <<'USAGE'
+Description:
+  Gracefully stops streaming daemons, tears down network namespaces,
+  bridges, virtual interfaces, and restores physical network adapters.
+  Supports selective, non-destructive cleaning of logs and captures.
+
 Usage:
   sudo ./scripts/cleanup.sh [options]
-  ./scripts/cleanup.sh logs
-  ./scripts/cleanup.sh captures
-  ./scripts/cleanup.sh data
+  ./scripts/cleanup.sh [command]
 
 Options:
   -r, --restore, --dhcp    Restore physical interfaces (WAN_IF, LAN_IF) to UP, re-enable NetworkManager,
@@ -33,6 +36,18 @@ Subcommands (Non-destructive to running topology):
   logs                     Purge logs/ without tearing down lab
   captures                 Purge captures/ without tearing down lab
   data                     Purge both logs/ and captures/ without tearing down lab
+
+Examples:
+  sudo ./scripts/cleanup.sh
+  sudo ./scripts/cleanup.sh --all
+  sudo ./scripts/cleanup.sh --down
+  ./scripts/cleanup.sh logs
+  ./scripts/cleanup.sh data
+
+Suggested Next Steps:
+  - Verify clean state:    ./scripts/show_state.sh
+  - Deploy virtual lab:    sudo ./scripts/setup.sh --virtual
+  - Deploy physical lab:   sudo ./scripts/setup.sh --physical
 USAGE
 }
 
@@ -80,7 +95,9 @@ main() {
         esac
     done
 
-    log_info "Initiating cleanup of IPTV Multicast Lab (restore_interfaces=${restore})..."
+    print_header "IPTV MULTICAST TEST LAB - TEARDOWN & CLEANUP"
+    log_info "Initiating cleanup (restore_interfaces=${restore})..."
+
 
     # 1. Stop capture and streaming daemon processes (direct and namespace)
     if [[ -x "${SCRIPT_DIR}/capture.sh" ]]; then
@@ -163,7 +180,11 @@ main() {
         clean_captures
     fi
 
-    log_info "Cleanup completed successfully."
+    log_success "Cleanup completed successfully!"
+    printf '\nSuggested next steps:\n'
+    printf '  - Check lab state:     ./scripts/show_state.sh\n'
+    printf '  - Deploy virtual lab:  sudo ./scripts/setup.sh --virtual\n'
 }
+
 
 main "$@"

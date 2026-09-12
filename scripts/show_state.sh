@@ -105,8 +105,41 @@ show_namespace_details() {
 
 show_container_details() { show_namespace_details "$@"; }
 
+usage() {
+    cat <<'USAGE'
+Description:
+  Displays comprehensive runtime state of the IPTV multicast test lab:
+  operating mode, bridges, namespaces, streaming daemons, client IGMP memberships,
+  DHCP lease status, and active packet capture files.
+  Can be run without root (sudo enables inspecting live kernel IGMP memberships).
+
+Usage:
+  ./scripts/show_state.sh [options]
+
+Options:
+  -h, --help    Show this help message
+
+Examples:
+  ./scripts/show_state.sh
+  sudo ./scripts/show_state.sh
+
+Suggested Next Steps:
+  - Start media stream:    sudo ./scripts/start_server.sh start
+  - Start client receiver: sudo ./scripts/start_client.sh 1 start
+  - Run benchmark suite:   sudo ./scripts/benchmark_suite.sh all
+USAGE
+}
+
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
+
 
     printf '==============================================================================\n'
     printf '                 REAL IPTV MULTICAST LAB - RUNTIME STATE                      \n'

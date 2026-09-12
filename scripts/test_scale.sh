@@ -11,14 +11,47 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
+usage() {
+    cat <<'USAGE'
+Description:
+  Evaluates router/DUT multicast capacity scale by joining N distinct multicast groups
+  simultaneously and verifying router IGMP snooping table capacity and forwarding.
+
+Usage:
+  sudo ./scripts/test_scale.sh [options] [group_count] [hold_sec] [group_prefix]
+
+Arguments / Options:
+  group_count       Number of concurrent multicast groups to join (default: 32)
+  hold_sec          Time to keep groups joined in seconds (default: 15)
+  group_prefix      Base multicast IP prefix (default: 239.100.1)
+  -h, --help        Show this help message
+
+Examples:
+  sudo ./scripts/test_scale.sh
+  sudo ./scripts/test_scale.sh 64 30
+
+Suggested Next Steps:
+  - Inspect DUT state:      ./scripts/dut_collector.sh collect
+  - Run benchmark suite:    sudo ./scripts/benchmark_suite.sh all
+USAGE
+}
+
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     require_root
     load_config
 
-    local group_prefix="${SCALE_GROUP_PREFIX:-239.100.1}"
-    local count="${SCALE_GROUP_COUNT:-32}"
-    local hold_sec="${SCALE_HOLD_SEC:-15}"
+    local count="${1:-${SCALE_GROUP_COUNT:-32}}"
+    local hold_sec="${2:-${SCALE_HOLD_SEC:-15}}"
+    local group_prefix="${3:-${SCALE_GROUP_PREFIX:-239.100.1}}"
     local groups="${group_prefix}.1-${count}"
+
 
     printf '==============================================================================\n'
     printf '   MULTICAST GROUP CAPACITY SCALE BENCHMARK (JOIN %s GROUPS)                  \n' "${count}"

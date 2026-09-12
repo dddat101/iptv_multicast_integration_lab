@@ -19,9 +19,41 @@ cleanup_scenario() {
     "${SCRIPT_DIR}/capture.sh" stop >/dev/null 2>&1 || true
 }
 
+usage() {
+    cat <<'USAGE'
+Description:
+  Executes an automated multi-phase end-to-end IPTV multicast qualification scenario:
+  Validates namespaces, starts LAN packet capture, launches FFmpeg media stream,
+  triggers IGMPv2 Joins from STB clients, verifies multi-client reception, executes
+  Leaves (Fast Leave testing), and performs automated PCAP verification.
+
+Usage:
+  sudo ./scripts/scenario.sh [options]
+
+Options:
+  -h, --help    Show this help message
+
+Examples:
+  sudo ./scripts/scenario.sh
+
+Suggested Next Steps:
+  - Inspect PCAP capture:   ./scripts/verify_capture.sh full
+  - Run benchmark suite:    sudo ./scripts/benchmark_suite.sh all
+  - Teardown lab:           sudo ./scripts/cleanup.sh
+USAGE
+}
+
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     require_root
     load_config
+
 
     trap cleanup_scenario EXIT INT TERM
 

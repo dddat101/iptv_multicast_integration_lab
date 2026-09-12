@@ -16,7 +16,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "${ROOT}/scripts/lib/common.sh"
 load_config
-require_cmd ffmpeg
 
 # Default Parameters
 OUT_FILE="${MEDIA_DIR}/${MEDIA_FILE}"
@@ -53,8 +52,13 @@ trap cleanup EXIT INT TERM
 
 usage() {
     cat <<'EOF'
+Description:
+  Generates standards-compliant MPEG-TS multicast test assets with customizable
+  bitrate, resolution, duration, synthetic test patterns, or image slideshows.
+
 Usage:
   ./scripts/generate_media.sh [options]
+
 
 Quick Presets:
   --preset-low, -low        Low-RAM lightweight stream: 640x360, 1 Mbps, 25 fps
@@ -112,6 +116,11 @@ Examples:
 
   # 5. Generate video from an image folder with custom audio:
   ./scripts/generate_media.sh -i /path/to/images -a /path/to/music.mp3 -o slideshow.ts
+
+Suggested Next Steps:
+  - Start media streamer:    sudo ./scripts/start_server.sh start
+  - Start client receiver:   sudo ./scripts/start_client.sh 1 start
+  - Run automated scenario:  sudo ./scripts/scenario.sh
 EOF
 }
 
@@ -525,6 +534,8 @@ main() {
                 ;;
         esac
     done
+
+    require_cmd ffmpeg
 
     # Resolve output path
     if [[ "${OUT_FILE}" != /* && "${OUT_FILE}" != ./* && "${OUT_FILE}" != ../* ]]; then

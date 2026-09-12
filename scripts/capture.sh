@@ -17,13 +17,38 @@ readonly META_FILE="${STATE_DIR}/latest_capture.txt"
 
 usage() {
     cat <<'USAGE'
+Description:
+  Manages background packet capture (tcpdump / tshark) on LAN or WAN bridges/interfaces.
+  Captures IGMP signaling, leave latency, and multicast MPEG-TS packet streams to PCAP files.
+
 Usage:
   sudo ./scripts/capture.sh start [lan|wan|all] [bpf_filter]
   sudo ./scripts/capture.sh stop
-  sudo ./scripts/capture.sh status
+  ./scripts/capture.sh status
   ./scripts/capture.sh clean
+  ./scripts/capture.sh -h | --help
+
+Commands:
+  start [target] [filter]  Start background packet capture on target interface (lan, wan, or all)
+                           Default target: lan. Default filter: "igmp or (udp and port 5000)"
+  stop                     Stop active background packet capture
+  status                   Display capture status, active PID, and output PCAP file details
+  clean                    Stop active capture and purge all capture files in captures/
+  -h, --help               Show this help message
+
+Examples:
+  sudo ./scripts/capture.sh start lan
+  sudo ./scripts/capture.sh start wan "igmp"
+  sudo ./scripts/capture.sh status
+  sudo ./scripts/capture.sh stop
+  ./scripts/capture.sh clean
+
+Suggested Next Steps:
+  - Run automated analysis: ./scripts/verify_capture.sh full
+  - Inspect running status: ./scripts/capture.sh status
 USAGE
 }
+
 
 select_capture_iface() {
     local target="$1"
@@ -149,8 +174,15 @@ show_status() {
 }
 
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
-    local action="${1:-}"
+    local action="${1:-status}"
 
     case "${action}" in
         start)
@@ -168,6 +200,10 @@ main() {
                 stop_capture
             fi
             clean_captures
+            ;;
+        -h|--help)
+            usage
+            exit 0
             ;;
         *)
             usage

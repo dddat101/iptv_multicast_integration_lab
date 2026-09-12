@@ -11,10 +11,27 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${LIB_DIR}/../.." && pwd)"
 
 # Standard ANSI loggers
-log_info()  { printf '\e[1;32m[INFO]\e[0m  %s\n' "$*"; }
-log_warn()  { printf '\e[1;33m[WARN]\e[0m  %s\n' "$*"; }
-log_error() { printf '\e[1;31m[ERROR]\e[0m %s\n' "$*" >&2; }
-die()       { log_error "$*"; exit 1; }
+log_info()    { printf '\e[1;32m[INFO]\e[0m    %s\n' "$*"; }
+log_success() { printf '\e[1;32m[PASS]\e[0m    %s\n' "$*"; }
+log_warn()    { printf '\e[1;33m[WARN]\e[0m    %s\n' "$*" >&2; }
+log_error()   { printf '\e[1;31m[ERROR]\e[0m   %s\n' "$*" >&2; }
+log_step()    { printf '\e[1;36m===> %s\e[0m\n' "$*"; }
+die()         { log_error "$*"; exit 1; }
+
+print_header() {
+    local title="${1:-}"
+    printf '==================================================================\n'
+    if [[ -n "${title}" ]]; then
+        printf '  %s\n' "${title}"
+        printf '==================================================================\n'
+    fi
+}
+
+print_section() {
+    local section="$1"
+    printf '\n--- [%s] ---\n' "${section}"
+}
+
 
 require_root() {
     [[ ${EUID} -eq 0 ]] || die "This script requires root privileges. Please run with sudo."

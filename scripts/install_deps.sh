@@ -22,12 +22,41 @@ readonly REQUIRED_PACKAGES=(
     vlc
 )
 
+usage() {
+    cat <<'USAGE'
+Description:
+  Installs required system host packages (FFmpeg, VLC, dnsmasq, udhcpc,
+  tcpdump, tshark, python3, ethtool, etc.) on Debian/Ubuntu or Fedora/RHEL.
+
+Usage:
+  sudo ./scripts/install_deps.sh [options]
+
+Options:
+  -h, --help    Show this help message
+
+Examples:
+  sudo ./scripts/install_deps.sh
+
+Suggested Next Steps:
+  - Verify environment:    ./scripts/diagnose.sh
+  - Deploy topology:       sudo ./scripts/setup.sh --virtual
+USAGE
+}
+
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     if [[ "$(id -u)" -ne 0 ]]; then
         printf 'ERROR: This script must be run as root (or with sudo).\n' >&2
         printf 'Usage: sudo ./scripts/install_deps.sh\n' >&2
         exit 1
     fi
+
 
     printf '==============================================================================\n'
     printf '        IPTV MULTICAST TEST LAB - HOST DEPENDENCY INSTALLER                    \n'

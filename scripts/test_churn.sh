@@ -11,13 +11,46 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
+usage() {
+    cat <<'USAGE'
+Description:
+  Evaluates router/DUT control-plane stability under rapid IGMPv2 Join/Leave
+  churn cycles from an emulated STB client or LAN interface.
+
+Usage:
+  sudo ./scripts/test_churn.sh [options] [multicast_group] [interval_ms] [cycles]
+
+Arguments / Options:
+  multicast_group   Multicast group IPv4 address (default: MCAST_GROUP or 239.10.10.10)
+  interval_ms       Delay between Join and Leave in milliseconds (default: 100)
+  cycles            Number of churn cycles to execute (default: 30)
+  -h, --help        Show this help message
+
+Examples:
+  sudo ./scripts/test_churn.sh
+  sudo ./scripts/test_churn.sh 239.10.10.10 50 50
+
+Suggested Next Steps:
+  - Inspect DUT state:      ./scripts/dut_collector.sh collect
+  - Run scale benchmark:    sudo ./scripts/test_scale.sh
+USAGE
+}
+
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     require_root
     load_config
 
     local group="${1:-${MCAST_GROUP:-239.10.10.10}}"
-    local interval="${CHURN_INTERVAL_MS:-100}"
-    local cycles="${CHURN_CYCLES:-30}"
+    local interval="${2:-${CHURN_INTERVAL_MS:-100}}"
+    local cycles="${3:-${CHURN_CYCLES:-30}}"
+
 
     printf '==============================================================================\n'
     printf '   RAPID JOIN/LEAVE CHURN BENCHMARK (%d CYCLES @ %d MS)                      \n' "${cycles}" "${interval}"

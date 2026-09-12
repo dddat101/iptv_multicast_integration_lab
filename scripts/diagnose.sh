@@ -11,8 +11,38 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
+usage() {
+    cat <<'USAGE'
+Description:
+  Performs non-destructive pre-flight diagnostics of host physical test adapters,
+  default route safety, media assets, and required CLI tools.
+
+Usage:
+  ./scripts/diagnose.sh [options]
+
+Options:
+  -h, --help    Show this help message
+
+Examples:
+  ./scripts/diagnose.sh
+
+Suggested Next Steps:
+  - If tools are missing:   sudo ./scripts/install_deps.sh
+  - If media is missing:   ./scripts/generate_media.sh
+  - Deploy topology:       sudo ./scripts/setup.sh --virtual
+USAGE
+}
+
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
+
 
     printf '==============================================================================\n'
     printf '                 REAL IPTV MULTICAST LAB - DIAGNOSTICS                        \n'

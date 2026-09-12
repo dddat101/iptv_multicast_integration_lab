@@ -12,6 +12,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 load_config
 
+usage() {
+    cat <<'USAGE'
+Description:
+  Configures host multicast routing and launches desktop VLC or FFplay GUI
+  to view real-time video streaming on LAN (through DUT) or WAN (direct from server).
+
+Usage:
+  ./scripts/view_stream_gui.sh [lan|wan]
+  ./scripts/view_stream_gui.sh -h | --help
+
+Options / Arguments:
+  lan           Watch stream forwarded by DUT router on LAN side [Default]
+  wan           Watch stream directly from Media Server on WAN side
+  -h, --help    Show this help message
+
+Examples:
+  ./scripts/view_stream_gui.sh lan
+  ./scripts/view_stream_gui.sh wan
+
+Suggested Next Steps:
+  - Check lab state:       ./scripts/show_state.sh
+  - Run scenario smoke:    sudo ./scripts/scenario.sh
+USAGE
+}
+
+for arg in "$@"; do
+    if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+        usage
+        exit 0
+    fi
+done
+
 TARGET="${1:-lan}" # 'lan' (through DUT) or 'wan' (direct from server)
 HOST_IP=""
 BRIDGE=""
@@ -25,13 +57,16 @@ case "${TARGET}" in
         BRIDGE="${WAN_BRIDGE}"
         HOST_IP="10.10.0.99/24"
         ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
     *)
-        printf 'Usage: %s [lan|wan]\n' "$0" >&2
-        printf '  lan = Watch stream forwarded by DUT Router on LAN side (default)\n' >&2
-        printf '  wan = Watch stream directly from Media Server on WAN side\n' >&2
+        usage
         exit 1
         ;;
 esac
+
 
 cleanup_gui_route() {
     log_info "Cleaning up host temporary multicast route on ${BRIDGE}..."

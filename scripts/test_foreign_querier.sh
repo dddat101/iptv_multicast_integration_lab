@@ -11,11 +11,43 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
+usage() {
+    cat <<'USAGE'
+Description:
+  Injects foreign IGMP General Queries on the LAN side to evaluate
+  router querier election behavior, querier timeout, and query filtering.
+
+Usage:
+  ./scripts/test_foreign_querier.sh [options] [foreign_ip] [lan_interface]
+
+Arguments / Options:
+  foreign_ip        Source IP for foreign queries (default: FOREIGN_QUERIER_IP or 192.168.1.250)
+  lan_interface     LAN interface or bridge (default: LAN_IF or LAN_BRIDGE)
+  -h, --help        Show this help message
+
+Examples:
+  ./scripts/test_foreign_querier.sh
+  ./scripts/test_foreign_querier.sh 192.168.1.254
+
+Suggested Next Steps:
+  - Inspect DUT state:      ./scripts/dut_collector.sh collect
+  - Run benchmark suite:    sudo ./scripts/benchmark_suite.sh all
+USAGE
+}
+
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
 
-    local foreign_ip="${FOREIGN_QUERIER_IP:-192.168.1.250}"
-    local lan_iface="${LAN_IF:-${LAN_BRIDGE}}"
+    local foreign_ip="${1:-${FOREIGN_QUERIER_IP:-192.168.1.250}}"
+    local lan_iface="${2:-${LAN_IF:-${LAN_BRIDGE}}}"
+
 
     printf '==============================================================================\n'
     printf '   FOREIGN LAN QUERIER INJECTION & BEHAVIOR BENCHMARK                         \n'

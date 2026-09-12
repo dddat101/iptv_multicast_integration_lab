@@ -15,14 +15,48 @@ cleanup_loss_test() {
     stop_pidfile "${STATE_DIR}/loss_sender.pid" || true
 }
 
+usage() {
+    cat <<'USAGE'
+Description:
+  Measures quantitative packet loss across multiple multicast groups simultaneously.
+  Transmits timestamped sequence-numbered UDP packets from WAN and verifies loss ratio
+  on LAN receiver against carrier criteria (<= 1e-9).
+
+Usage:
+  ./scripts/test_packet_loss.sh [options] [num_groups] [rate_pps] [duration_sec]
+
+Arguments / Options:
+  num_groups     Number of multicast groups to test (default: 12)
+  rate_pps       Total transmission rate in packets/sec (default: 1200)
+  duration_sec   Test duration in seconds (default: 15)
+  -h, --help     Show this help message
+
+Examples:
+  ./scripts/test_packet_loss.sh
+  ./scripts/test_packet_loss.sh 8 800 10
+
+Suggested Next Steps:
+  - Inspect DUT state:      ./scripts/dut_collector.sh collect
+  - Run benchmark suite:    sudo ./scripts/benchmark_suite.sh all
+USAGE
+}
+
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
 
-    local num_groups="${LOSS_TEST_GROUPS:-12}"
+    local num_groups="${1:-${LOSS_TEST_GROUPS:-12}}"
+    local rate="${2:-${LOSS_TEST_RATE_PPS:-1200}}"
+    local duration="${3:-${LOSS_TEST_DURATION:-15}}"
     local pkt_size="${LOSS_TEST_PACKET_SIZE:-1200}"
-    local rate="${LOSS_TEST_RATE_PPS:-1200}"
-    local duration="${LOSS_TEST_DURATION:-15}"
     local groups="239.100.1.1-${num_groups}"
+
 
     printf '==============================================================================\n'
     printf '   MULTI-GROUP MULTICAST LOSS MEASUREMENT BENCHMARK                           \n'
