@@ -1,0 +1,90 @@
+{
+  "Dhcp6": {
+    "interfaces-config": {
+      "interfaces": [ "@DUT_IF@" ],
+      "service-sockets-max-retries": 5,
+      "service-sockets-retry-wait-time": 1000
+    },
+
+    "lease-database": {
+      "type": "memfile",
+      "persist": false
+    },
+
+    "valid-lifetime": @DHCP_VALID_LIFETIME_SEC@,
+    "renew-timer": @DHCP_RENEW_TIMER_SEC@,
+    "rebind-timer": @DHCP_REBIND_TIMER_SEC@,
+    "preferred-lifetime": @DHCP6_PREFERRED_LIFETIME_SEC@,
+
+    "subnet6": [
+      {
+        "id": 1,
+        "subnet": "@WAN_IPV6_PREFIX@",
+        "interface": "@DUT_IF@",
+        "rapid-commit": true,
+
+        // 1. Cap dia chi IP cho cong WAN cua DUT (IA_NA)
+        "pools": [
+          {
+            "pool": "@WAN_IPV6_POOL_START@ - @WAN_IPV6_POOL_END@"
+          }
+        ],
+
+        // 2. Cap dai Prefix cho mang LAN cua DUT (IA_PD - RFC 3633)
+        // Pool /56 se chia thanh cac khoi /60 cap cho tung router
+        "pd-pools": [
+          {
+            "prefix": "@PD_PREFIX@",
+            "prefix-len": @PD_PREFIX_LEN@,
+            "delegated-len": @PD_DELEGATED_LEN@
+          }
+        ],
+
+        "option-data": [
+          {
+            "name": "dns-servers",
+            "data": "@WAN_IPV6_DNS@"
+          },
+          {
+            "name": "domain-search",
+            "data": "example.com"
+          },
+          {
+            "name": "aftr-name",
+            "data": "@AFTR_NAME@"
+          }
+        ]
+      }
+    ],
+
+    // 3. Log giup theo doi chi tiet cap phat IA_NA va IA_PD
+    "loggers": [
+      {
+        "name": "kea-dhcp6",
+        "output_options": [
+          {
+            "output": "stdout"
+          },
+          {
+            "output": "/var/log/kea-dhcp6.log"
+          }
+        ],
+        "severity": "INFO",
+        "debuglevel": 0
+      },
+      {
+        "name": "kea-dhcp6.leases",
+        "output_options": [
+          {
+            "output": "stdout"
+          },
+          {
+            "output": "/var/log/kea-dhcp6.log"
+          }
+        ],
+        "severity": "DEBUG",
+        "debuglevel": 50
+      }
+    ]
+  }
+}
