@@ -66,41 +66,52 @@ run_phase_discovery() {
         "${SCRIPT_DIR}/generate_media.sh"
     fi
 
-    local c1_ip c2_ip
-    c1_ip="$(ip -n "${CLIENT1_NAME}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
-    c2_ip="$(ip -n "${CLIENT2_NAME}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
-    log_info "STB Client 1 (${CLIENT1_NAME}): IP ${c1_ip}"
-    log_info "STB Client 2 (${CLIENT2_NAME}): IP ${c2_ip}"
+    local c1_v4 c1_v6 c2_v4 c2_v6
+    c1_v4="$(ip -n "${CLIENT1_NAME}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
+    c1_v6="$(ip -n "${CLIENT1_NAME}" -6 -o addr show dev eth0 scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
+    c2_v4="$(ip -n "${CLIENT2_NAME}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
+    c2_v6="$(ip -n "${CLIENT2_NAME}" -6 -o addr show dev eth0 scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
+
+    if [[ "${IP_VERSION:-4}" == "dual" || "${IP_VERSION:-4}" == "dual-stack" || "${IP_VERSION:-4}" == "ds" ]]; then
+        log_info "STB Client 1 (${CLIENT1_NAME}): IPv4=${c1_v4}, IPv6=${c1_v6}"
+        log_info "STB Client 2 (${CLIENT2_NAME}): IPv4=${c2_v4}, IPv6=${c2_v6}"
+    elif [[ "${IP_VERSION:-4}" == "6" ]]; then
+        log_info "STB Client 1 (${CLIENT1_NAME}): IP ${c1_v6}"
+        log_info "STB Client 2 (${CLIENT2_NAME}): IP ${c2_v6}"
+    else
+        log_info "STB Client 1 (${CLIENT1_NAME}): IP ${c1_v4}"
+        log_info "STB Client 2 (${CLIENT2_NAME}): IP ${c2_v4}"
+    fi
 }
 
 run_phase_traffic() {
-    log_step "[PHASE 2] Starting media stream & multi-client joins..."
+    local grp_label="${MCAST_GROUP}"
+    if [[ "${IP_VERSION:-4}" == "dual" || "${IP_VERSION:-4}" == "dual-stack" || "${IP_VERSION:-4}" == "ds" ]]; then
+        grp_label="IPv4=${MCAST_GROUP}, IPv6=${MCAST_GROUP6:-ff0e::10:10:10}"
+    fi
+    log_step "[PHASE 2] Starting media stream & multi-client joins (Group: ${grp_label})..."
     log_info "Starting background FFmpeg MPEG-TS stream on ${SERVER_NAME}..."
     "${SCRIPT_DIR}/start_server.sh" start
 
     # Deterministic wait: wait for media server process
     sleep 1
 
-    local c1_ip
-    c1_ip="$(ip -n "${CLIENT1_NAME}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
-    log_info "Starting VLC in ${CLIENT1_NAME} (IP: ${c1_ip}) (sends IGMPv2 Join)..."
+    log_info "Starting VLC in ${CLIENT1_NAME} (sends Multicast Join)..."
     "${SCRIPT_DIR}/start_client.sh" 1 start
     sleep 3
 
-    local c2_ip
-    c2_ip="$(ip -n "${CLIENT2_NAME}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo '<no-ip>')"
-    log_info "Starting VLC in ${CLIENT2_NAME} (IP: ${c2_ip}) (Multi-client join)..."
+    log_info "Starting VLC in ${CLIENT2_NAME} (Multi-client join)..."
     "${SCRIPT_DIR}/start_client.sh" 2 start
     sleep 3
 }
 
 run_phase_leave() {
     log_step "[PHASE 3] Executing client leaves (Fast Leave / Zapping)..."
-    log_info "Stopping VLC in ${CLIENT1_NAME} (IGMP Leave)..."
+    log_info "Stopping VLC in ${CLIENT1_NAME} (IGMP/MLD Leave)..."
     "${SCRIPT_DIR}/start_client.sh" 1 stop
     sleep 2
 
-    log_info "Stopping VLC in ${CLIENT2_NAME} (IGMP Leave)..."
+    log_info "Stopping VLC in ${CLIENT2_NAME} (IGMP/MLD Leave)..."
     "${SCRIPT_DIR}/start_client.sh" 2 stop
     sleep 1
 
@@ -111,7 +122,14 @@ run_phase_leave() {
 run_phase_verify() {
     log_step "[PHASE 4] Running automated PCAP compliance verification..."
     if [[ -x "${SCRIPT_DIR}/verify_compliance.sh" ]]; then
-        "${SCRIPT_DIR}/verify_compliance.sh"
+        if [[ "${IP_VERSION:-4}" == "dual" || "${IP_VERSION:-4}" == "dual-stack" || "${IP_VERSION:-4}" == "ds" ]]; then
+            log_info "Verifying IPv4 multicast compliance..."
+            "${SCRIPT_DIR}/verify_compliance.sh" "" "${MCAST_GROUP:-239.10.10.10}" || true
+            log_info "Verifying IPv6 multicast compliance..."
+            "${SCRIPT_DIR}/verify_compliance.sh" "" "${MCAST_GROUP6:-ff0e::10:10:10}" || true
+        else
+            "${SCRIPT_DIR}/verify_compliance.sh"
+        fi
     elif [[ -x "${SCRIPT_DIR}/verify_capture.sh" ]]; then
         "${SCRIPT_DIR}/verify_capture.sh" full
     fi
@@ -135,6 +153,13 @@ main() {
 
     require_root
     load_config
+    if [[ -f "${STATE_DIR}/topology_state.env" ]]; then
+        local saved_proto saved_mcast
+        saved_proto="$(grep '^IP_VERSION=' "${STATE_DIR}/topology_state.env" 2>/dev/null | cut -d= -f2 | tr -d "'\"" || true)"
+        saved_mcast="$(grep '^MCAST_GROUP=' "${STATE_DIR}/topology_state.env" 2>/dev/null | cut -d= -f2 | tr -d "'\"" || true)"
+        [[ -n "${saved_proto}" ]] && IP_VERSION="${saved_proto}"
+        [[ -n "${saved_mcast}" ]] && MCAST_GROUP="${saved_mcast}"
+    fi
 
     trap cleanup_scenario EXIT INT TERM
 

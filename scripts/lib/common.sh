@@ -115,6 +115,22 @@ load_config() {
     : "${CLIENT2_HOSTNAME:=stb-bedroom}"
     : "${CLIENT_DHCP_VENDOR:=IPTV_STB}"
     : "${FORCE_IGMP_VERSION:=2}"
+    : "${FORCE_MLD_VERSION:=2}"
+    : "${IP_VERSION:=4}"
+    : "${DUT_WAN_IP6:=fd00:10:10::1}"
+    : "${DUT_LAN_IP6:=fd00:10:20::1}"
+    : "${WAN_NS_IP6:=fd00:10:10::254/64}"
+    : "${WAN_NS_GW6:=fd00:10:10::1}"
+    : "${WAN_DHCP6_START:=fd00:10:10::10}"
+    : "${WAN_DHCP6_END:=fd00:10:10::50}"
+    : "${SERVER_IP6:=fd00:10:10::2/64}"
+    : "${SERVER_GW6:=fd00:10:10::1}"
+    : "${CLIENT1_IP6:=fd00:10:20::11/64}"
+    : "${CLIENT1_GW6:=fd00:10:20::1}"
+    : "${CLIENT2_IP6:=fd00:10:20::12/64}"
+    : "${CLIENT2_GW6:=fd00:10:20::1}"
+    : "${CLIENT_PREFIX_IP6:=fd00:10:20::}"
+    : "${MCAST_GROUP6:=ff0e::10:10:10}"
     : "${CAPTURE_DIR:=captures}"
     : "${LOG_DIR:=logs}"
     : "${STATE_DIR:=state}"
@@ -327,10 +343,12 @@ wait_for_ping() {
 
 bridge_create() {
     local bridge="$1"
+    local ip_version="${2:-${IP_VERSION:-4}}"
     if ! bridge_exists "${bridge}"; then
         ip link add name "${bridge}" type bridge
     fi
     ip addr flush dev "${bridge}" 2>/dev/null || true
+    # Disable host-level IPv6 stack on test bridge to prevent host SLAAC route pollution (from ipv6_gateway_lab)
     sysctl -q -w "net.ipv6.conf.${bridge}.disable_ipv6=1" 2>/dev/null || true
     ip link set dev "${bridge}" type bridge stp_state 0 mcast_snooping 0 2>/dev/null || true
     ip link set dev "${bridge}" up
@@ -339,11 +357,16 @@ bridge_create() {
 attach_physical_to_bridge() {
     local iface="$1"
     local bridge="$2"
+    local ip_version="${3:-${IP_VERSION:-4}}"
 
     assert_safe_test_if "${iface}"
     command -v nmcli >/dev/null 2>&1 && nmcli device set "${iface}" managed no 2>/dev/null || true
     ip link set dev "${iface}" down
     ip addr flush dev "${iface}" 2>/dev/null || true
+    if [[ "${ip_version}" == "6" || "${ip_version}" == "dual" || "${ip_version}" == "dual-stack" || "${ip_version}" == "ds" ]]; then
+        sysctl -q -w "net.ipv6.conf.${iface}.disable_ipv6=0" 2>/dev/null || true
+        sysctl -q -w "net.ipv6.conf.${iface}.accept_dad=0" 2>/dev/null || true
+    fi
     ip link set dev "${iface}" master "${bridge}"
     ip link set dev "${iface}" up
 }
@@ -401,10 +424,37 @@ attach_netns_to_bridge() {
     local bridge="$2"
     local host_veth="$3"
     local peer_veth="$4"
-    local cidr="${5:-}"
-    local gateway="${6:-}"
-    local hostname="${7:-}"
-    local mac="${8:-}"
+    local cidrv4=""
+    local gatewayv4=""
+    local cidrv6=""
+    local gatewayv6=""
+    local hostname=""
+    local mac=""
+    local ip_mode="${IP_VERSION:-4}"
+
+    if [[ $# -ge 11 ]]; then
+        cidrv4="${5:-}"
+        gatewayv4="${6:-}"
+        cidrv6="${7:-}"
+        gatewayv6="${8:-}"
+        hostname="${9:-}"
+        mac="${10:-}"
+        ip_mode="${11:-${IP_VERSION:-4}}"
+    else
+        local arg5="${5:-}"
+        local arg6="${6:-}"
+        hostname="${7:-}"
+        mac="${8:-}"
+        ip_mode="${9:-${IP_VERSION:-4}}"
+
+        if [[ "${ip_mode}" == "6" || "${arg5}" =~ : ]]; then
+            cidrv6="${arg5}"
+            gatewayv6="${arg6}"
+        else
+            cidrv4="${arg5}"
+            gatewayv4="${arg6}"
+        fi
+    fi
 
     netns_create "${ns}"
 
@@ -419,18 +469,73 @@ attach_netns_to_bridge() {
     if [[ -n "${mac}" ]]; then
         ip -n "${ns}" link set eth0 address "${mac}" 2>/dev/null || true
     fi
-    ip -n "${ns}" addr flush dev eth0 2>/dev/null || true
-    if [[ -n "${cidr}" ]]; then
-        ip -n "${ns}" addr add "${cidr}" dev eth0
-        printf '%s\n' "${cidr%%/*}" > "${STATE_DIR}/ip-${ns}.txt"
-    fi
     ip -n "${ns}" link set eth0 up
-    if [[ -n "${gateway}" ]]; then
-        ip -n "${ns}" route replace default via "${gateway}" dev eth0 2>/dev/null || true
-        printf '%s\n' "${gateway}" > "${STATE_DIR}/gw-${ns}.txt"
+
+    # Flush IPv4 and global IPv6 only - preserve link-local fe80:: (RFC 4861 requirement from ipv6_gateway_lab)
+    ip -n "${ns}" -4 addr flush dev eth0 2>/dev/null || true
+    ip -n "${ns}" -6 addr flush dev eth0 scope global 2>/dev/null || true
+
+    if [[ "${ip_mode}" == "6" || "${ip_mode}" == "dual" || "${ip_mode}" == "dual-stack" || "${ip_mode}" == "ds" || -n "${cidrv6}" ]]; then
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.all.disable_ipv6=0" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.default.disable_ipv6=0" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.eth0.disable_ipv6=0" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.eth0.addr_gen_mode=0" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.all.accept_dad=0" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.default.accept_dad=0" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.eth0.accept_dad=0" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.eth0.accept_ra=2" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.eth0.autoconf=1" 2>/dev/null || true
+
+        # Ensure immediate link-local address exists (RFC 4861)
+        if ! ip netns exec "${ns}" ip -6 -o addr show dev eth0 scope link 2>/dev/null | grep -q 'inet6 '; then
+            local host_id="1"
+            if [[ "${ns}" =~ [0-9]+$ ]]; then
+                host_id="${BASH_REMATCH[0]}"
+            elif [[ "${ns}" == "${SERVER_NAME:-ns-server}" ]]; then
+                host_id="2"
+            elif [[ "${ns}" == "${WAN_NS:-ns-wan}" ]]; then
+                host_id="254"
+            fi
+            ip -n "${ns}" -6 addr add "fe80::${host_id}/64" dev eth0 nodad 2>/dev/null || true
+        fi
     fi
 
-    ip -n "${ns}" sysctl -q -w "net.ipv4.igmp_max_memberships=256" 2>/dev/null || true
+    # IPv4 configuration
+    if [[ -n "${cidrv4}" ]]; then
+        ip -n "${ns}" addr add "${cidrv4}" dev eth0
+        printf '%s\n' "${cidrv4%%/*}" > "${STATE_DIR}/ip-${ns}.txt"
+    fi
+    if [[ -n "${gatewayv4}" ]]; then
+        ip -n "${ns}" route replace default via "${gatewayv4}" dev eth0 2>/dev/null || true
+        printf '%s\n' "${gatewayv4}" > "${STATE_DIR}/gw-${ns}.txt"
+    fi
+
+    # IPv6 configuration
+    if [[ -n "${cidrv6}" ]]; then
+        ip -n "${ns}" -6 addr add "${cidrv6}" dev eth0 nodad
+        printf '%s\n' "${cidrv6%%/*}" > "${STATE_DIR}/ip6-${ns}.txt"
+    fi
+    if [[ -n "${gatewayv6}" ]]; then
+        ip -n "${ns}" -6 route replace default via "${gatewayv6}" dev eth0 2>/dev/null || true
+        printf '%s\n' "${gatewayv6}" > "${STATE_DIR}/gw6-${ns}.txt"
+    fi
+
+    ip -n "${ns}" link set eth0 up
+
+    # Multicast routing & group membership tunings
+    if [[ "${ip_mode}" == "4" || "${ip_mode}" == "dual" || "${ip_mode}" == "dual-stack" || "${ip_mode}" == "ds" || -n "${cidrv4}" ]]; then
+        ip -n "${ns}" route replace 224.0.0.0/4 dev eth0 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv4.conf.all.force_igmp_version=${FORCE_IGMP_VERSION:-2}" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv4.conf.eth0.force_igmp_version=${FORCE_IGMP_VERSION:-2}" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv4.igmp_max_memberships=256" 2>/dev/null || true
+    fi
+
+    if [[ "${ip_mode}" == "6" || "${ip_mode}" == "dual" || "${ip_mode}" == "dual-stack" || "${ip_mode}" == "ds" || -n "${cidrv6}" ]]; then
+        ip -n "${ns}" -6 route replace ff00::/8 dev eth0 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.all.force_mld_version=${FORCE_MLD_VERSION:-2}" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.eth0.force_mld_version=${FORCE_MLD_VERSION:-2}" 2>/dev/null || true
+        wait_for_ipv6_dad "${ns}" eth0 5
+    fi
 
     if [[ -n "${hostname}" ]]; then
         printf '%s\n' "${hostname}" > "${STATE_DIR}/hostname-${ns}.txt"
@@ -448,6 +553,36 @@ force_netns_igmp_version() {
         ip -n "${ns}" sysctl -q -w "net.ipv4.conf.eth0.force_igmp_version=${version}" 2>/dev/null || true
         ip -n "${ns}" sysctl -q -w "net.ipv4.igmp_max_memberships=256" 2>/dev/null || true
     fi
+}
+
+force_netns_mld_version() {
+    local ns="$1"
+    local version="${2:-2}"
+    if ns_exists "${ns}"; then
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.all.disable_ipv6=0" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.eth0.disable_ipv6=0" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.all.force_mld_version=${version}" 2>/dev/null || true
+        ip -n "${ns}" sysctl -q -w "net.ipv6.conf.eth0.force_mld_version=${version}" 2>/dev/null || true
+    fi
+}
+
+wait_for_ipv6_dad() {
+    local ns="${1:-}"
+    local iface="${2:-eth0}"
+    local max_wait="${3:-5}"
+    local prefix=()
+    if [[ -n "${ns}" ]] && ns_exists "${ns}"; then
+        prefix=("ip" "netns" "exec" "${ns}")
+    fi
+
+    local i
+    for (( i=0; i<max_wait*10; i++ )); do
+        if ! "${prefix[@]}" ip -6 addr show dev "${iface}" 2>/dev/null | grep -q "tentative"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 0
 }
 
 run_in_netns_user() {
@@ -517,6 +652,17 @@ get_client_ip() {
     fi
 }
 
+get_client_ip6() {
+    local idx="$1"
+    if [[ "${idx}" == "1" && -n "${CLIENT1_IP6:-}" ]]; then
+        printf '%s\n' "${CLIENT1_IP6}"
+    elif [[ "${idx}" == "2" && -n "${CLIENT2_IP6:-}" ]]; then
+        printf '%s\n' "${CLIENT2_IP6}"
+    else
+        printf '%s%d/64\n' "${CLIENT_PREFIX_IP6:-fd00:10:20::}" "$(( 10 + idx ))"
+    fi
+}
+
 get_all_client_names() {
     local count
     count="$(get_client_count)"
@@ -546,8 +692,9 @@ force_container_igmp_version() { force_netns_igmp_version "$@"; }
 # Virtual DUT Simulation
 # ------------------------------------------------------------------------------
 setup_virtual_dut() {
+    local ip_version="${1:-${IP_VERSION:-4}}"
     local ns_dut="ns-dut"
-    log_info "Creating simulated DUT router ${ns_dut}..."
+    log_info "Creating simulated DUT router ${ns_dut} (IPv${ip_version})..."
 
     if ! ns_exists "${ns_dut}"; then
         ip netns add "${ns_dut}"
@@ -574,16 +721,35 @@ setup_virtual_dut() {
     ip netns exec "${ns_dut}" ip link set dev br-dut type bridge stp_state 0 mcast_snooping 0 2>/dev/null || true
     ip netns exec "${ns_dut}" ip link set dut-wan master br-dut
     ip netns exec "${ns_dut}" ip link set dut-lan master br-dut
-    ip netns exec "${ns_dut}" ip addr add "${DUT_WAN_IP}/24" dev br-dut
-    ip netns exec "${ns_dut}" ip addr add "${DUT_LAN_IP}/24" dev br-dut
+
+    if [[ "${ip_version}" == "4" || "${ip_version}" == "dual" || "${ip_version}" == "dual-stack" || "${ip_version}" == "ds" ]]; then
+        ip netns exec "${ns_dut}" ip addr add "${DUT_WAN_IP}/24" dev br-dut
+        ip netns exec "${ns_dut}" ip addr add "${DUT_LAN_IP}/24" dev br-dut
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv4.ip_forward=1 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv4.conf.all.mc_forwarding=1 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv4.conf.br-dut.force_igmp_version=2 2>/dev/null || true
+        ip netns exec "${ns_dut}" route replace 224.0.0.0/4 dev br-dut 2>/dev/null || true
+    fi
+
+    if [[ "${ip_version}" == "6" || "${ip_version}" == "dual" || "${ip_version}" == "dual-stack" || "${ip_version}" == "ds" ]]; then
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv6.conf.all.disable_ipv6=0 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv6.conf.default.disable_ipv6=0 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv6.conf.br-dut.disable_ipv6=0 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv6.conf.all.accept_dad=0 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv6.conf.default.accept_dad=0 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv6.conf.br-dut.accept_dad=0 2>/dev/null || true
+        ip netns exec "${ns_dut}" ip -6 addr add "fe80::1/64" dev br-dut nodad 2>/dev/null || true
+        ip netns exec "${ns_dut}" ip addr add "${DUT_WAN_IP6:-fd00:10:10::1}/64" dev br-dut nodad
+        ip netns exec "${ns_dut}" ip addr add "${DUT_LAN_IP6:-fd00:10:20::1}/64" dev br-dut nodad
+        ip netns exec "${ns_dut}" ip -6 route replace ff00::/8 dev br-dut 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv6.conf.all.forwarding=1 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv6.conf.all.mc_forwarding=1 2>/dev/null || true
+        ip netns exec "${ns_dut}" sysctl -q -w net.ipv6.conf.br-dut.force_mld_version=2 2>/dev/null || true
+        wait_for_ipv6_dad "${ns_dut}" br-dut 5
+    fi
+
     ip netns exec "${ns_dut}" ip link set br-dut up
-
-    # Enable multicast forwarding inside simulated DUT
-    ip netns exec "${ns_dut}" sysctl -q -w net.ipv4.ip_forward=1 2>/dev/null || true
-    ip netns exec "${ns_dut}" sysctl -q -w net.ipv4.conf.all.mc_forwarding=1 2>/dev/null || true
-    ip netns exec "${ns_dut}" sysctl -q -w net.ipv4.conf.br-dut.force_igmp_version=2 2>/dev/null || true
-
-    log_info "Simulated DUT ready: Bridged WAN (${DUT_WAN_IP}) & LAN (${DUT_LAN_IP}) with multicast forwarding"
+    log_info "Simulated DUT ready (${ip_version}): WAN (${DUT_WAN_IP} / ${DUT_WAN_IP6}) & LAN (${DUT_LAN_IP} / ${DUT_LAN_IP6}) with multicast forwarding"
 }
 
 # ------------------------------------------------------------------------------
@@ -591,6 +757,7 @@ setup_virtual_dut() {
 # ------------------------------------------------------------------------------
 wan_dhcp_server() {
     local action="$1"
+    local ip_version="${2:-${IP_VERSION:-4}}"
     local pidfile="${STATE_DIR}/dnsmasq-wan.pid"
     local conffile="${STATE_DIR}/dnsmasq-wan.conf"
     local leasefile="${STATE_DIR}/dnsmasq-wan.leases"
@@ -602,29 +769,92 @@ wan_dhcp_server() {
             require_cmd dnsmasq
             stop_pidfile "${pidfile}"
 
-            cat >"${conffile}" <<EOF
+            local wan_v4_start="${WAN_IPV4_POOL_START:-${WAN_DHCP_START:-10.10.0.100}}"
+            local wan_v4_end="${WAN_IPV4_POOL_END:-${WAN_DHCP_END:-10.10.0.200}}"
+            local wan_v4_lease="${DHCP_VALID_LIFETIME_SEC:-${WAN_DHCP_LEASE:-12h}}"
+            [[ "${wan_v4_lease}" =~ ^[0-9]+$ ]] && wan_v4_lease="${wan_v4_lease}s"
+            local wan_v4_gw="${WAN_IPV4_ROUTER:-${WAN_NS_GW:-${WAN_NS_IP%/*}}}"
+            local wan_v4_dns="${WAN_IPV4_DNS:-${wan_v4_gw}}"
+            local wan_v4_dns2="${WAN_IPV4_DNS2:-}"
+
+            local wan_v6_prefix="${WAN_IPV6_PREFIX:-${WAN_IPV6_CIDR:-${WAN_NS_IP6:-2001:db8:10::/64}}}"
+            local wan_v6_base="${wan_v6_prefix%/*}"
+            local wan_v6_start="${WAN_IPV6_POOL_START:-${WAN_DHCP6_START:-${wan_v6_base%::*}::1000}}"
+            local wan_v6_end="${WAN_IPV6_POOL_END:-${WAN_DHCP6_END:-${wan_v6_base%::*}::1fff}}"
+            local wan_v6_gw="${WAN_IPV6_DNS:-${WAN_NS_GW6:-${WAN_NS_IP6%/*}}}"
+            local wan_v6_dns="${WAN_IPV6_DNS:-${wan_v6_gw}}"
+            local wan_v6_dns2="${WAN_IPV6_DNS2:-}"
+
+            if [[ "${ip_version}" == "dual" || "${ip_version}" == "dual-stack" || "${ip_version}" == "ds" ]]; then
+                wait_for_ipv6_dad "${WAN_NS}" eth0 5
+                cat >"${conffile}" <<EOF
 port=0
 no-resolv
 no-hosts
 bind-interfaces
 interface=eth0
-dhcp-range=${WAN_DHCP_START},${WAN_DHCP_END},255.255.255.0,${WAN_DHCP_LEASE}
-dhcp-option=option:router,${WAN_NS_IP%/*}
-dhcp-option=option:dns-server,${WAN_NS_IP%/*}
+# IPv4 DHCP
+dhcp-range=${wan_v4_start},${wan_v4_end},255.255.255.0,${wan_v4_lease}
+dhcp-option=option:router,${wan_v4_gw}
+dhcp-option=option:dns-server,${wan_v4_dns}
+# IPv6 SLAAC & DHCPv6
+enable-ra
+dhcp-range=${wan_v6_start},${wan_v6_end},slaac,ra-stateless,64,${wan_v4_lease}
+dhcp-range=${wan_v6_start},${wan_v6_end},64,${wan_v4_lease}
+dhcp-option=option6:dns-server,[${wan_v6_dns}]
 dhcp-authoritative
 dhcp-leasefile=${leasefile}
 log-facility=${logfile}
 log-dhcp
 EOF
-            if [[ -n "${DUT_WAN_MAC:-}" ]]; then
-                printf 'dhcp-host=%s,%s\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" >>"${conffile}"
+                if [[ -n "${DUT_WAN_MAC:-}" ]]; then
+                    printf 'dhcp-host=%s,%s,[%s]\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" "${DUT_WAN_IP6:-2001:db8:10::1}" >>"${conffile}"
+                fi
+            elif [[ "${ip_version}" == "6" ]]; then
+                wait_for_ipv6_dad "${WAN_NS}" eth0 5
+                cat >"${conffile}" <<EOF
+port=0
+no-resolv
+no-hosts
+bind-interfaces
+interface=eth0
+enable-ra
+dhcp-range=${wan_v6_start},${wan_v6_end},slaac,ra-stateless,64,${wan_v4_lease}
+dhcp-range=${wan_v6_start},${wan_v6_end},64,${wan_v4_lease}
+dhcp-option=option6:dns-server,[${wan_v6_dns}]
+dhcp-authoritative
+dhcp-leasefile=${leasefile}
+log-facility=${logfile}
+log-dhcp
+EOF
+                if [[ -n "${DUT_WAN_MAC:-}" ]]; then
+                    printf 'dhcp-host=%s,[%s]\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP6:-2001:db8:10::1}" >>"${conffile}"
+                fi
+            else
+                cat >"${conffile}" <<EOF
+port=0
+no-resolv
+no-hosts
+bind-interfaces
+interface=eth0
+dhcp-range=${wan_v4_start},${wan_v4_end},255.255.255.0,${wan_v4_lease}
+dhcp-option=option:router,${wan_v4_gw}
+dhcp-option=option:dns-server,${wan_v4_dns}
+dhcp-authoritative
+dhcp-leasefile=${leasefile}
+log-facility=${logfile}
+log-dhcp
+EOF
+                if [[ -n "${DUT_WAN_MAC:-}" ]]; then
+                    printf 'dhcp-host=%s,%s\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" >>"${conffile}"
+                fi
             fi
 
             touch "${leasefile}"
             chmod 0666 "${leasefile}" 2>/dev/null || true
 
             ip netns exec "${WAN_NS}" dnsmasq --conf-file="${conffile}" --pid-file="${pidfile}"
-            log_info "WAN DHCP Server (dnsmasq) started in ${WAN_NS} [PID $(cat "${pidfile}" 2>/dev/null || echo '?')]"
+            log_info "WAN DHCP Server (dnsmasq) started in ${WAN_NS} (mode: ${ip_version}) [PID $(cat "${pidfile}" 2>/dev/null || echo '?')]"
             ;;
 
         stop)
@@ -658,6 +888,16 @@ namespace_ip() {
     fi
 }
 
+namespace_ipv6() {
+    local ns="${1:-${WAN_NS}}"
+    local iface="${2:-eth0}"
+    if ns_exists "${ns}"; then
+        (ip netns exec "${ns}" ip -6 -o addr show dev "${iface}" scope global 2>/dev/null || true) | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo ""
+    else
+        (ip -6 -o addr show dev "${iface}" scope global 2>/dev/null || true) | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo ""
+    fi
+}
+
 namespace_mac() {
     local ns="${1:-${WAN_NS}}"
     local iface="${2:-eth0}"
@@ -668,12 +908,59 @@ namespace_mac() {
     fi
 }
 
+is_ip_reachable() {
+    local target="$1"
+    local timeout="${2:-1}"
+    local ns="${3:-}"
+    local ping_bin="ping"
+    if [[ "${target}" =~ : ]]; then
+        ping_bin="ping -6"
+    fi
+
+    if [[ -n "${ns}" ]] && ns_exists "${ns}"; then
+        ip netns exec "${ns}" ${ping_bin} -c 1 -W "${timeout}" "${target}" >/dev/null 2>&1
+    else
+        ${ping_bin} -c 1 -W "${timeout}" "${target}" >/dev/null 2>&1
+    fi
+}
+
+wait_for_ping() {
+    local target="$1"
+    local timeout="${2:-10}"
+    local ns="${3:-}"
+    local elapsed=0
+    while ! is_ip_reachable "${target}" 1 "${ns}"; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if (( elapsed >= timeout )); then
+            log_warn "Timeout waiting for ping response from ${target} after ${timeout}s"
+            return 1
+        fi
+    done
+    return 0
+}
+
 # ------------------------------------------------------------------------------
 # Direct Standalone WAN Server & DHCP Helpers (Host-level, no topology bridge)
 # ------------------------------------------------------------------------------
 configure_direct_wan_interface() {
     local iface="$1"
-    local cidr="$2"
+    local cidrv4="${2:-}"
+    local cidrv6="${3:-}"
+    local ip_mode="${4:-${IP_VERSION:-4}}"
+
+    # Backward compatibility: if only 2 args passed
+    if [[ $# -eq 2 ]]; then
+        if [[ "${2}" =~ : ]]; then
+            cidrv6="${2}"
+            cidrv4=""
+            ip_mode="6"
+        else
+            cidrv4="${2}"
+            cidrv6=""
+            ip_mode="4"
+        fi
+    fi
 
     require_root
     assert_safe_test_if "${iface}"
@@ -689,21 +976,32 @@ configure_direct_wan_interface() {
 
     ip link set dev "${iface}" up
 
-    # Configure IP
-    if ! ip -4 addr show dev "${iface}" 2>/dev/null | grep -q "${cidr}"; then
-        ip addr flush dev "${iface}" 2>/dev/null || true
-        ip addr add "${cidr}" dev "${iface}"
+    # Flush previous test addresses
+    ip -4 addr flush dev "${iface}" 2>/dev/null || true
+    ip -6 addr flush dev "${iface}" scope global 2>/dev/null || true
+
+    # Configure IPv4
+    if [[ -n "${cidrv4}" ]]; then
+        ip addr add "${cidrv4}" dev "${iface}"
+        ip route replace 224.0.0.0/4 dev "${iface}" 2>/dev/null || true
+        if [[ -w "/proc/sys/net/ipv4/conf/${iface}/force_igmp_version" ]]; then
+            printf '2\n' > "/proc/sys/net/ipv4/conf/${iface}/force_igmp_version" 2>/dev/null || true
+        fi
     fi
 
-    # Multicast route: Ensure multicast traffic goes out WAN_IF
-    ip route replace 224.0.0.0/4 dev "${iface}"
-
-    # Force IGMPv2 on physical interface if writable
-    if [[ -w "/proc/sys/net/ipv4/conf/${iface}/force_igmp_version" ]]; then
-        printf '2\n' > "/proc/sys/net/ipv4/conf/${iface}/force_igmp_version" 2>/dev/null || true
+    # Configure IPv6
+    if [[ -n "${cidrv6}" ]]; then
+        sysctl -q -w "net.ipv6.conf.${iface}.disable_ipv6=0" 2>/dev/null || true
+        sysctl -q -w "net.ipv6.conf.${iface}.accept_dad=0" 2>/dev/null || true
+        ip -6 addr add "${cidrv6}" dev "${iface}" nodad 2>/dev/null || true
+        ip -6 route replace ff00::/8 dev "${iface}" 2>/dev/null || true
+        if [[ -w "/proc/sys/net/ipv6/conf/${iface}/force_mld_version" ]]; then
+            printf '%s\n' "${FORCE_MLD_VERSION:-2}" > "/proc/sys/net/ipv6/conf/${iface}/force_mld_version" 2>/dev/null || true
+        fi
+        wait_for_ipv6_dad "" "${iface}" 5
     fi
 
-    log_info "Interface ${iface} configured for direct WAN IPTV streaming (${cidr})."
+    log_info "Interface ${iface} configured for direct WAN IPTV streaming (mode: ${ip_mode})."
 }
 
 restore_physical_interface() {
@@ -718,9 +1016,12 @@ restore_physical_interface() {
     # 1. Detach from bridge master if any
     ip link set dev "${iface}" nomaster 2>/dev/null || true
 
-    # 2. Delete test multicast route
+    # 2. Delete test multicast routes
     if ip route show 224.0.0.0/4 2>/dev/null | grep -Eq "dev[[:space:]]+${iface}([[:space:]]|$)"; then
         ip route del 224.0.0.0/4 dev "${iface}" 2>/dev/null || true
+    fi
+    if ip -6 route show ff00::/8 2>/dev/null | grep -Eq "dev[[:space:]]+${iface}([[:space:]]|$)"; then
+        ip -6 route del ff00::/8 dev "${iface}" 2>/dev/null || true
     fi
 
     # 3. Flush any static lab IP
@@ -772,6 +1073,9 @@ tear_down_physical_interface() {
     if ip route show 224.0.0.0/4 2>/dev/null | grep -Eq "dev[[:space:]]+${iface}([[:space:]]|$)"; then
         ip route del 224.0.0.0/4 dev "${iface}" 2>/dev/null || true
     fi
+    if ip -6 route show ff00::/8 2>/dev/null | grep -Eq "dev[[:space:]]+${iface}([[:space:]]|$)"; then
+        ip -6 route del ff00::/8 dev "${iface}" 2>/dev/null || true
+    fi
     if command -v dhclient >/dev/null 2>&1; then
         dhclient -x "${iface}" 2>/dev/null || true
     fi
@@ -799,6 +1103,7 @@ cleanup_direct_wan_interface() {
 direct_wan_dhcp_server() {
     local action="$1"
     local iface="${2:-${WAN_IF}}"
+    local ip_version="${3:-${IP_VERSION:-4}}"
     local pidfile="${STATE_DIR}/dnsmasq-direct.pid"
     local conffile="${STATE_DIR}/dnsmasq-direct.conf"
     local leasefile="${STATE_DIR}/dnsmasq-direct.leases"
@@ -810,7 +1115,27 @@ direct_wan_dhcp_server() {
             require_cmd dnsmasq
             stop_pidfile "${pidfile}"
 
-            cat >"${conffile}" <<EOF
+            if [[ "${ip_version}" == "6" ]]; then
+                wait_for_ipv6_dad "" "${iface}" 5
+                cat >"${conffile}" <<EOF
+port=0
+no-resolv
+no-hosts
+bind-interfaces
+interface=${iface}
+enable-ra
+dhcp-range=${WAN_DHCP6_START:-fd00:10:10::10},${WAN_DHCP6_END:-fd00:10:10::50},slaac,ra-stateless,64,${WAN_DHCP_LEASE}
+dhcp-range=${WAN_DHCP6_START:-fd00:10:10::10},${WAN_DHCP6_END:-fd00:10:10::50},64,${WAN_DHCP_LEASE}
+dhcp-authoritative
+dhcp-leasefile=${leasefile}
+log-facility=${logfile}
+log-dhcp
+EOF
+                if [[ -n "${DUT_WAN_MAC:-}" ]]; then
+                    printf 'dhcp-host=%s,[%s]\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP6:-fd00:10:10::1}" >>"${conffile}"
+                fi
+            else
+                cat >"${conffile}" <<EOF
 port=0
 no-resolv
 no-hosts
@@ -824,15 +1149,16 @@ dhcp-leasefile=${leasefile}
 log-facility=${logfile}
 log-dhcp
 EOF
-            if [[ -n "${DUT_WAN_MAC:-}" ]]; then
-                printf 'dhcp-host=%s,%s\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" >>"${conffile}"
+                if [[ -n "${DUT_WAN_MAC:-}" ]]; then
+                    printf 'dhcp-host=%s,%s\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" >>"${conffile}"
+                fi
             fi
 
             touch "${leasefile}"
             chmod 0666 "${leasefile}" 2>/dev/null || true
 
             dnsmasq --conf-file="${conffile}" --pid-file="${pidfile}"
-            log_info "Direct WAN DHCP Server (dnsmasq) started on ${iface} [PID $(cat "${pidfile}" 2>/dev/null || echo '?')]"
+            log_info "Direct WAN DHCP Server (dnsmasq) started on ${iface} (IPv${ip_version}) [PID $(cat "${pidfile}" 2>/dev/null || echo '?')]"
             ;;
 
         stop)

@@ -25,10 +25,12 @@ Usage:
   ./scripts/client_dhcp.sh -h | --help
 
 Actions:
-  request  [client|all] [hostname]  One-shot DHCP lease request
-  daemon   [client|all] [hostname]  Start background udhcpc daemon to maintain/renew lease
-  release  [client|all]             Release DHCP lease and flush IP
-  status   [client|all]             Show assigned IP, hostname, MAC, and lease status [Default]
+  request, request-v4 [client|all] [hostname] One-shot DHCPv4 lease request
+  request-v6          [client|all]            Trigger IPv6 configuration (SLAAC / DHCPv6)
+  dual                [client|all] [hostname] Trigger concurrent Dual-Stack IP acquisition (v4 + v6)
+  daemon              [client|all] [hostname] Start background udhcpc daemon to maintain/renew lease
+  release             [client|all]            Release DHCP leases and flush client IP addresses
+  status              [client|all]            Show assigned IP, hostname, MAC, and lease status [Default]
 
 Targets:
   all           All STB client namespaces [Default]
@@ -40,6 +42,8 @@ Options:
 
 Examples:
   sudo ./scripts/client_dhcp.sh request all
+  sudo ./scripts/client_dhcp.sh request-v6 all
+  sudo ./scripts/client_dhcp.sh dual all
   sudo ./scripts/client_dhcp.sh daemon 1
   ./scripts/client_dhcp.sh status all
   sudo ./scripts/client_dhcp.sh release all
@@ -161,9 +165,49 @@ start_dhcp_daemon() {
     log_info "${name} (${hostname}) udhcpc daemon started [PID $(cat "${pidfile}" 2>/dev/null || echo "${bg_pid}")], IP: ${ip_addr:-waiting...}"
 }
 
+request_v6() {
+    local name="$1"
+    require_root
+    netns_exists "${name}" || die "Namespace '${name}' is not running. Run sudo ./scripts/setup.sh first."
+
+    log_info "Triggering IPv6 SLAAC / DHCPv6 configuration in ${name}..."
+
+    # Ensure IPv6 and accept_ra are active
+    ip netns exec "${name}" sysctl -q -w "net.ipv6.conf.all.disable_ipv6=0" 2>/dev/null || true
+    ip netns exec "${name}" sysctl -q -w "net.ipv6.conf.eth0.disable_ipv6=0" 2>/dev/null || true
+    ip netns exec "${name}" sysctl -q -w "net.ipv6.conf.eth0.accept_ra=2" 2>/dev/null || true
+    ip netns exec "${name}" sysctl -q -w "net.ipv6.conf.eth0.autoconf=1" 2>/dev/null || true
+    ip netns exec "${name}" sysctl -q -w "net.ipv6.conf.eth0.accept_dad=0" 2>/dev/null || true
+
+    # Send Router Solicitation (multicast to all-routers ff02::2) - pattern from ipv6_gateway_lab
+    ip netns exec "${name}" ping -6 -c 2 -W 1 ff02::2%eth0 >/dev/null 2>&1 || true
+
+    # Try stateful DHCPv6 client if dhclient is installed
+    if command -v dhclient >/dev/null 2>&1; then
+        local pidfile="${STATE_DIR}/dhclient6-${name}.pid"
+        local leasefile="${STATE_DIR}/dhclient6-${name}.leases"
+        stop_pidfile "${pidfile}"
+        ip netns exec "${name}" dhclient -6 -1 -N -v \
+            -pf "${pidfile}" -lf "${leasefile}" eth0 >/dev/null 2>&1 || true
+    fi
+
+    sleep 0.5
+    local v6_ip gw6
+    v6_ip="$(namespace_ipv6 "${name}" eth0)"
+    gw6="$(ip netns exec "${name}" ip -6 route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
+    if [[ -n "${v6_ip}" ]]; then
+        printf '%s\n' "${v6_ip}" > "${STATE_DIR}/ip6-${name}.txt"
+        [[ -n "${gw6}" ]] && printf '%s\n' "${gw6}" > "${STATE_DIR}/gw6-${name}.txt"
+        log_info "SUCCESS: ${name} obtained IPv6 address: ${v6_ip} (Gateway: ${gw6:-<none>})"
+    else
+        log_warn "No global IPv6 address detected on ${name}/eth0 yet."
+    fi
+}
+
 release_lease() {
     local name="$1"
     local pidfile="${STATE_DIR}/udhcpc-${name}.pid"
+    local pidfile6="${STATE_DIR}/dhclient6-${name}.pid"
 
     require_root
     if is_pidfile_running "${pidfile}"; then
@@ -171,38 +215,63 @@ release_lease() {
         stop_pidfile "${pidfile}"
     fi
 
+    if is_pidfile_running "${pidfile6}"; then
+        stop_pidfile "${pidfile6}"
+    fi
+
     if netns_exists "${name}"; then
+        if command -v dhclient >/dev/null 2>&1; then
+            ip netns exec "${name}" dhclient -6 -r eth0 >/dev/null 2>&1 || true
+        fi
         ip -n "${name}" -4 addr flush dev eth0 2>/dev/null || true
         ip -n "${name}" -4 route flush dev eth0 2>/dev/null || true
+        ip -n "${name}" -6 addr flush dev eth0 scope global 2>/dev/null || true
     fi
-    log_info "Released DHCP lease and flushed IP for ${name}."
+    log_info "Released DHCP leases and flushed IP for ${name}."
 }
 
 show_status() {
     local name="$1"
     local pidfile="${STATE_DIR}/udhcpc-${name}.pid"
+    local pidfile6="${STATE_DIR}/dhclient6-${name}.pid"
 
     if ! netns_exists "${name}"; then
         printf '  %-15s : Namespace not running\n' "${name}"
         return 0
     fi
 
-    local status="STATIC / NO DHCP DAEMON"
+    local status="STATIC"
+    local v4_running=0 v6_running=0
     if is_pidfile_running "${pidfile}"; then
-        status="DHCP DAEMON (PID $(cat "${pidfile}"))"
+        v4_running=1
+    fi
+    if is_pidfile_running "${pidfile6}"; then
+        v6_running=1
     fi
 
-    local ip_addr="" gw="" mac="" host=""
+    if (( v4_running == 1 && v6_running == 1 )); then
+        status="DUAL DHCP (v4 PID $(cat "${pidfile}"), v6 PID $(cat "${pidfile6}"))"
+    elif (( v4_running == 1 )); then
+        status="DHCPv4 DAEMON (PID $(cat "${pidfile}"))"
+    elif (( v6_running == 1 )); then
+        status="DHCPv6 CLIENT (PID $(cat "${pidfile6}"))"
+    fi
+
+    local ip_addr="" ip6_addr="" gw="" gw6="" mac="" host=""
     host="$(cat "${STATE_DIR}/hostname-${name}.txt" 2>/dev/null || echo '<default>')"
 
     # 1. Live query from kernel (requires root / sudo)
     if is_root; then
         ip_addr="$(ip -n "${name}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
-        gw="$(ip netns exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
+        ip6_addr="$(ip -n "${name}" -6 -o addr show dev eth0 scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+        gw="$(ip netns exec "${name}" ip -4 route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
+        gw6="$(ip netns exec "${name}" ip -6 route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
         mac="$(ip -n "${name}" link show dev eth0 2>/dev/null | awk '/link\/ether/ {print $2}' || true)"
 
         [[ -n "${ip_addr}" ]] && printf '%s\n' "${ip_addr}" > "${STATE_DIR}/ip-${name}.txt" 2>/dev/null || true
+        [[ -n "${ip6_addr}" ]] && printf '%s\n' "${ip6_addr}" > "${STATE_DIR}/ip6-${name}.txt" 2>/dev/null || true
         [[ -n "${gw}" ]] && printf '%s\n' "${gw}" > "${STATE_DIR}/gw-${name}.txt" 2>/dev/null || true
+        [[ -n "${gw6}" ]] && printf '%s\n' "${gw6}" > "${STATE_DIR}/gw6-${name}.txt" 2>/dev/null || true
         [[ -n "${mac}" ]] && printf '%s\n' "${mac}" > "${STATE_DIR}/mac-${name}.txt" 2>/dev/null || true
     fi
 
@@ -217,23 +286,27 @@ show_status() {
     if [[ -z "${ip_addr}" ]]; then
         ip_addr="$(cat "${STATE_DIR}/ip-${name}.txt" 2>/dev/null || true)"
     fi
-    if [[ -z "${ip_addr}" && -f "${LOG_DIR}/udhcpc-${name}.log" ]]; then
-        ip_addr="$(awk '/lease of/ {for(i=1;i<=NF;i++) if($i=="of") print $(i+1)}' "${LOG_DIR}/udhcpc-${name}.log" 2>/dev/null | tr -d ',' | tail -n1 || true)"
+    if [[ -z "${ip6_addr}" ]]; then
+        ip6_addr="$(cat "${STATE_DIR}/ip6-${name}.txt" 2>/dev/null || true)"
     fi
-
     if [[ -z "${gw}" ]]; then
         gw="$(cat "${STATE_DIR}/gw-${name}.txt" 2>/dev/null || true)"
     fi
-    if [[ -z "${gw}" && -f "${LOG_DIR}/udhcpc-${name}.log" ]]; then
-        gw="$(awk '/obtained from/ {for(i=1;i<=NF;i++) if($i=="from") print $(i+1)}' "${LOG_DIR}/udhcpc-${name}.log" 2>/dev/null | tr -d ',' | tail -n1 || true)"
+    if [[ -z "${gw6}" ]]; then
+        gw6="$(cat "${STATE_DIR}/gw6-${name}.txt" 2>/dev/null || true)"
     fi
 
     ip_addr="${ip_addr:-<no-ip>}"
     gw="${gw:-<none>}"
     mac="${mac:-<unknown>}"
 
-    printf '  %-15s | Host: %-16s | MAC: %s | IP: %-15s | GW: %-15s | %s\n' \
-        "${name}" "${host}" "${mac}" "${ip_addr}" "${gw}" "${status}"
+    if [[ -n "${ip6_addr}" ]]; then
+        printf '  %-15s | Host: %-16s | MAC: %s | IPv4: %-15s | IPv6: %s | %s\n' \
+            "${name}" "${host}" "${mac}" "${ip_addr}" "${ip6_addr}" "${status}"
+    else
+        printf '  %-15s | Host: %-16s | MAC: %s | IP: %-15s | GW: %-15s | %s\n' \
+            "${name}" "${host}" "${mac}" "${ip_addr}" "${gw}" "${status}"
+    fi
 }
 
 run_on_target() {
@@ -267,7 +340,12 @@ run_on_target() {
         local hostname="${explicit_hostname:-${default_host}}"
 
         case "${action}" in
-            request) request_lease "${name}" "${hostname}" || true ;;
+            request|request-v4) request_lease "${name}" "${hostname}" || true ;;
+            request-v6)         request_v6 "${name}" || true ;;
+            dual)
+                request_lease "${name}" "${hostname}" || true
+                request_v6 "${name}" || true
+                ;;
             daemon)  start_dhcp_daemon "${name}" "${hostname}" || true ;;
             release) release_lease "${name}" ;;
             status)  show_status "${name}" ;;
@@ -289,7 +367,7 @@ main() {
     local explicit_hostname="${3:-}"
 
     case "${action}" in
-        request|daemon|release)
+        request|request-v4|request-v6|dual|daemon|release)
             run_on_target "${action}" "${target}" "${explicit_hostname}"
             ;;
         status)

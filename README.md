@@ -280,9 +280,50 @@ Deploys both bridges, starts media server streaming in `ns-server`, and launches
 sudo ./scripts/setup.sh --virtual
 ```
 
+#### Mode 6: IP Protocol Selection (IPv4 / IGMP vs IPv6 / MLD vs Dual-Stack)
+The testbed natively supports IPv4 (IGMPv2), IPv6 (MLDv2), and concurrent Dual-Stack (IPv4 + IPv6) multicast topologies across all running modes:
+
+```bash
+# 1. IPv4 Mode (Default):
+sudo ./scripts/setup.sh -s -w -4
+# Or full physical DUT with 5 STB clients:
+sudo ./scripts/setup.sh --physical -4 --clients 5
+
+# 2. IPv6 Mode (MLDv2 & ff0e::10:10:10):
+sudo ./scripts/setup.sh -s -w -6
+# Or full physical DUT with 5 STB clients:
+sudo ./scripts/setup.sh --physical -6 --clients 5
+
+# 3. Dual-Stack Mode (Concurrent IPv4 + IPv6):
+sudo ./scripts/setup.sh -s -w --dual
+# Short aliases: -ds, --dual-stack, -2
+# Or full physical DUT with 5 STB clients:
+sudo ./scripts/setup.sh --physical --dual --clients 5
+
+# Virtual simulation in Dual-Stack mode:
+sudo ./scripts/setup.sh --virtual --dual
+```
+
+* **IPv4 Mode (`-4`, default)**: Assigns IPv4 subnets (`10.10.0.0/24` WAN, `10.20.0.0/24` LAN), streams to `239.10.10.10:5000`, enforces IGMPv2, and runs IPv4 DHCP (`dnsmasq`).
+* **IPv6 Mode (`-6`)**: Assigns IPv6 ULA subnets (`fd00:10:10::/64` WAN, `fd00:10:20::/64` LAN), streams to `[ff0e::10:10:10]:5000`, enforces MLDv2 (`force_mld_version=2`), enables IPv6 forwarding, and provides SLAAC/DHCPv6 (`dnsmasq`).
+* **Dual-Stack Mode (`--dual`, `--dual-stack`, `-ds`, `-2`)**: Configures concurrent IPv4 and IPv6 addressing across all namespaces, runs dual DHCPv4 + SLAAC/DHCPv6 server, launches concurrent dual multicast streaming (`239.10.10.10:5000` + `[ff0e::10:10:10]:5000`), and provisions dual STB client listeners.
+
 Verify state anytime with:
 ```bash
 ./scripts/show_state.sh
+```
+
+##### Dual-Stack Streaming & Client Operations:
+```bash
+# Start dual-stack media streaming (both IPv4 and IPv6 streams):
+sudo ./scripts/start_server.sh --dual start
+./scripts/start_server.sh status
+sudo ./scripts/start_server.sh stop
+
+# Start STB clients to receive both IPv4 and IPv6 multicast streams:
+sudo ./scripts/start_client.sh --dual all start
+./scripts/start_client.sh status all
+sudo ./scripts/start_client.sh stop all
 ```
 
 ---
@@ -292,16 +333,23 @@ Verify state anytime with:
 You can inspect, request, or renew DHCP leases for namespace STB clients at any time:
 
 ```bash
-# Check current lease status, IP, gateway, and MAC for all clients:
+# Check current lease status, IP (IPv4 & IPv6), gateway, and MAC for all clients:
 ./scripts/client_dhcp.sh status all
 
-# Request a one-shot DHCP lease for client 1 or all clients:
+# Request a one-shot IPv4 DHCP lease for client 1 or all clients:
 sudo ./scripts/client_dhcp.sh request all
+# Or explicitly: sudo ./scripts/client_dhcp.sh request-v4 all
 
-# Start background udhcpc daemons to continuously maintain/renew leases:
+# Request an IPv6 lease (SLAAC Router Solicitation / DHCPv6) for all clients:
+sudo ./scripts/client_dhcp.sh request-v6 all
+
+# Request both IPv4 and IPv6 leases concurrently (Dual-Stack):
+sudo ./scripts/client_dhcp.sh dual all
+
+# Start background udhcpc daemons to continuously maintain/renew IPv4 leases:
 sudo ./scripts/client_dhcp.sh daemon all
 
-# Release lease and flush IP:
+# Release leases and flush IP addresses (IPv4 & IPv6):
 sudo ./scripts/client_dhcp.sh release all
 ```
 

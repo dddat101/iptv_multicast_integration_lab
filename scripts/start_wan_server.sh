@@ -30,10 +30,15 @@ Options:
   -i, --interface <iface> Specify physical interface for streaming (e.g. eno1, enxd46e...)
   -g, --group <ip>        Override multicast destination IP (default: 239.10.10.10)
   -p, --port <port>       Override UDP destination port (default: 5000)
+  -4, --ipv4              Stream over IPv4 multicast (default: 239.10.10.10)
+  -6, --ipv6              Stream over IPv6 multicast (default: ff0e::10:10:10)
+  --dual, --dual-stack    Stream over both IPv4 and IPv6 multicast concurrently
   -h, --help              Show this help message and exit
 
 Examples:
   sudo ./scripts/start_wan_server.sh run
+  sudo ./scripts/start_wan_server.sh -6 start
+  sudo ./scripts/start_wan_server.sh --dual start
   sudo ./scripts/start_wan_server.sh -i eno1 start
   ./scripts/start_wan_server.sh status
   sudo ./scripts/start_wan_server.sh stop

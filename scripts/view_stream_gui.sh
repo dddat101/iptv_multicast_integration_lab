@@ -45,6 +45,13 @@ main() {
     done
 
     load_config
+    if [[ -f "${STATE_DIR}/topology_state.env" ]]; then
+        local saved_proto saved_mcast
+        saved_proto="$(grep '^IP_VERSION=' "${STATE_DIR}/topology_state.env" 2>/dev/null | cut -d= -f2 | tr -d "'\"" || true)"
+        saved_mcast="$(grep '^MCAST_GROUP=' "${STATE_DIR}/topology_state.env" 2>/dev/null | cut -d= -f2 | tr -d "'\"" || true)"
+        [[ -n "${saved_proto}" ]] && IP_VERSION="${saved_proto}"
+        [[ -n "${saved_mcast}" ]] && MCAST_GROUP="${saved_mcast}"
+    fi
 
     local target="${1:-lan}"
     local host_ip=""
@@ -53,11 +60,19 @@ main() {
     case "${target}" in
         lan)
             bridge="${LAN_BRIDGE}"
-            host_ip="10.20.0.99/24"
+            if [[ "${IP_VERSION:-4}" == "6" || "${MCAST_GROUP}" =~ : ]]; then
+                host_ip="fd00:10:20::99/64"
+            else
+                host_ip="10.20.0.99/24"
+            fi
             ;;
         wan)
             bridge="${WAN_BRIDGE}"
-            host_ip="10.10.0.99/24"
+            if [[ "${IP_VERSION:-4}" == "6" || "${MCAST_GROUP}" =~ : ]]; then
+                host_ip="fd00:10:10::99/64"
+            else
+                host_ip="10.10.0.99/24"
+            fi
             ;;
         *)
             usage
@@ -67,7 +82,11 @@ main() {
 
     cleanup_gui_route() {
         log_info "Cleaning up host temporary multicast route on ${bridge}..."
-        sudo ip route del 224.0.0.0/4 dev "${bridge}" 2>/dev/null || true
+        if [[ "${host_ip}" =~ : ]]; then
+            sudo ip -6 route del ff00::/8 dev "${bridge}" 2>/dev/null || true
+        else
+            sudo ip route del 224.0.0.0/4 dev "${bridge}" 2>/dev/null || true
+        fi
         sudo ip addr del "${host_ip}" dev "${bridge}" 2>/dev/null || true
     }
 
@@ -76,8 +95,15 @@ main() {
     bridge_exists "${bridge}" || die "Bridge '${bridge}' not found. Run 'sudo ./scripts/setup.sh' first."
 
     log_info "Configuring host multicast routing on ${bridge} (${host_ip})..."
-    sudo ip addr add "${host_ip}" dev "${bridge}" 2>/dev/null || true
-    sudo ip route replace 224.0.0.0/4 dev "${bridge}"
+    if [[ "${host_ip}" =~ : ]]; then
+        sudo sysctl -q -w "net.ipv6.conf.${bridge}.disable_ipv6=0" 2>/dev/null || true
+        sudo sysctl -q -w "net.ipv6.conf.${bridge}.accept_dad=0" 2>/dev/null || true
+        sudo ip addr add "${host_ip}" dev "${bridge}" nodad 2>/dev/null || true
+        sudo ip -6 route replace ff00::/8 dev "${bridge}"
+    else
+        sudo ip addr add "${host_ip}" dev "${bridge}" 2>/dev/null || true
+        sudo ip route replace 224.0.0.0/4 dev "${bridge}"
+    fi
 
     # Check player
     local player=""
@@ -89,13 +115,20 @@ main() {
         die "Neither 'vlc' nor 'ffplay' is installed on Ubuntu host."
     fi
 
-    log_info "Launching ${player} GUI for udp://@${MCAST_GROUP}:${MCAST_PORT}..."
+    local url_target
+    if [[ "${MCAST_GROUP}" =~ : ]]; then
+        url_target="[${MCAST_GROUP}]:${MCAST_PORT}"
+    else
+        url_target="${MCAST_GROUP}:${MCAST_PORT}"
+    fi
+
+    log_info "Launching ${player} GUI for udp://@${url_target}..."
     printf 'Press Ctrl+C or close the player window to stop and clean up routes.\n'
 
     if [[ "${player}" == "vlc" ]]; then
-        vlc "udp://@${MCAST_GROUP}:${MCAST_PORT}"
+        vlc "udp://@${url_target}"
     else
-        ffplay -i "udp://${MCAST_GROUP}:${MCAST_PORT}"
+        ffplay -i "udp://${url_target}"
     fi
 }
 

@@ -25,17 +25,21 @@ show_namespace_details() {
         return 0
     fi
 
-    local ip_addr="" gw="" host="" mac="" ip_mode=""
+    local ip_addr="" ip6_addr="" gw="" gw6="" host="" mac="" ip_mode=""
     host="$(cat "${STATE_DIR}/hostname-${name}.txt" 2>/dev/null || echo '<default>')"
 
     # 1. Live query from kernel (requires root / sudo)
     if is_root; then
         ip_addr="$(ip -n "${name}" -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
-        gw="$(ip netns exec "${name}" ip route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
+        ip6_addr="$(ip -n "${name}" -6 -o addr show dev eth0 scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+        gw="$(ip netns exec "${name}" ip -4 route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
+        gw6="$(ip netns exec "${name}" ip -6 route show default 2>/dev/null | awk '{print $3}' | head -n1 || true)"
         mac="$(ip -n "${name}" link show dev eth0 2>/dev/null | awk '/link\/ether/ {print $2}' || true)"
 
         [[ -n "${ip_addr}" ]] && printf '%s\n' "${ip_addr}" > "${STATE_DIR}/ip-${name}.txt" 2>/dev/null || true
+        [[ -n "${ip6_addr}" ]] && printf '%s\n' "${ip6_addr}" > "${STATE_DIR}/ip6-${name}.txt" 2>/dev/null || true
         [[ -n "${gw}" ]] && printf '%s\n' "${gw}" > "${STATE_DIR}/gw-${name}.txt" 2>/dev/null || true
+        [[ -n "${gw6}" ]] && printf '%s\n' "${gw6}" > "${STATE_DIR}/gw6-${name}.txt" 2>/dev/null || true
         [[ -n "${mac}" ]] && printf '%s\n' "${mac}" > "${STATE_DIR}/mac-${name}.txt" 2>/dev/null || true
     fi
 
@@ -50,28 +54,48 @@ show_namespace_details() {
     if [[ -z "${ip_addr}" ]]; then
         ip_addr="$(cat "${STATE_DIR}/ip-${name}.txt" 2>/dev/null || true)"
     fi
+    if [[ -z "${ip6_addr}" ]]; then
+        ip6_addr="$(cat "${STATE_DIR}/ip6-${name}.txt" 2>/dev/null || true)"
+    fi
     if [[ -z "${ip_addr}" && -f "${LOG_DIR}/udhcpc-${name}.log" ]]; then
         ip_addr="$(awk '/lease of/ {for(i=1;i<=NF;i++) if($i=="of") print $(i+1)}' "${LOG_DIR}/udhcpc-${name}.log" 2>/dev/null | tr -d ',' | tail -n1 || true)"
     fi
     if [[ -z "${ip_addr}" ]]; then
-        if [[ "${name}" == "${SERVER_NAME}" && -n "${SERVER_IP:-}" ]]; then
+        if [[ "${name}" == "${SERVER_NAME}" ]]; then
             ip_addr="${SERVER_IP%/*}"
-        elif [[ "${name}" == "${WAN_NS}" && -n "${WAN_NS_IP:-}" ]]; then
+        elif [[ "${name}" == "${WAN_NS}" ]]; then
             ip_addr="${WAN_NS_IP%/*}"
+        fi
+    fi
+    if [[ -z "${ip6_addr}" ]]; then
+        if [[ "${name}" == "${SERVER_NAME}" ]]; then
+            ip6_addr="${SERVER_IP6%/*}"
+        elif [[ "${name}" == "${WAN_NS}" ]]; then
+            ip6_addr="${WAN_NS_IP6%/*}"
         fi
     fi
 
     if [[ -z "${gw}" ]]; then
         gw="$(cat "${STATE_DIR}/gw-${name}.txt" 2>/dev/null || true)"
     fi
+    if [[ -z "${gw6}" ]]; then
+        gw6="$(cat "${STATE_DIR}/gw6-${name}.txt" 2>/dev/null || true)"
+    fi
     if [[ -z "${gw}" && -f "${LOG_DIR}/udhcpc-${name}.log" ]]; then
         gw="$(awk '/obtained from/ {for(i=1;i<=NF;i++) if($i=="from") print $(i+1)}' "${LOG_DIR}/udhcpc-${name}.log" 2>/dev/null | tr -d ',' | tail -n1 || true)"
     fi
     if [[ -z "${gw}" ]]; then
-        if [[ "${name}" == "${SERVER_NAME}" && -n "${SERVER_GW:-}" ]]; then
+        if [[ "${name}" == "${SERVER_NAME}" ]]; then
             gw="${SERVER_GW}"
-        elif [[ "${name}" == "${WAN_NS}" && -n "${WAN_NS_GW:-}" ]]; then
+        elif [[ "${name}" == "${WAN_NS}" ]]; then
             gw="${WAN_NS_GW}"
+        fi
+    fi
+    if [[ -z "${gw6}" ]]; then
+        if [[ "${name}" == "${SERVER_NAME}" ]]; then
+            gw6="${SERVER_GW6}"
+        elif [[ "${name}" == "${WAN_NS}" ]]; then
+            gw6="${WAN_NS_GW6}"
         fi
     fi
 
@@ -82,8 +106,18 @@ show_namespace_details() {
 
     printf '  Hostname:      %s\n' "${host}"
     printf '  MAC Address:   %s\n' "${mac:-<unknown>}"
-    printf '  IP Address:    %s (%s)\n' "${ip_addr:-<no-ip>}" "${ip_mode}"
-    printf '  Default Route: via %s\n' "${gw:-<none>}"
+    if [[ "${IP_VERSION:-4}" == "dual" ]]; then
+        printf '  IPv4 Address:  %s (%s)\n' "${ip_addr:-<no-ip>}" "${ip_mode}"
+        printf '  IPv6 Address:  %s\n' "${ip6_addr:-<no-ip>}"
+        printf '  IPv4 Route:    default via %s\n' "${gw:-<none>}"
+        printf '  IPv6 Route:    default via %s\n' "${gw6:-<none>}"
+    elif [[ "${IP_VERSION:-4}" == "6" ]]; then
+        printf '  IP Address:    %s (%s)\n' "${ip6_addr:-${ip_addr:-<no-ip>}}" "${ip_mode}"
+        printf '  Default Route: via %s\n' "${gw6:-${gw:-<none>}}"
+    else
+        printf '  IP Address:    %s (%s)\n' "${ip_addr:-<no-ip>}" "${ip_mode}"
+        printf '  Default Route: via %s\n' "${gw:-<none>}"
+    fi
     printf '  Multicast Groups Joined:\n'
     local found_mcast=0
     if is_root; then
@@ -92,11 +126,11 @@ show_namespace_details() {
                 printf '    * %s\n' "${g}"
                 found_mcast=1
             fi
-        done < <(ip netns exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet / {print $2}' || true)
+        done < <(ip netns exec "${name}" ip maddr show dev eth0 2>/dev/null | awk '/inet(6)? / {print $2}' || true)
     fi
     if (( found_mcast == 0 )); then
         if ! is_root; then
-            printf '    (Run with sudo to inspect live IGMP memberships)\n'
+            printf '    (Run with sudo to inspect live memberships)\n'
         else
             printf '    <none>\n'
         fi
@@ -167,6 +201,7 @@ main() {
         source "${STATE_DIR}/topology_state.env"
         wan_only="${WAN_ONLY:-0}"
         server_only="${SERVER_ONLY:-0}"
+        IP_VERSION="${IP_VERSION:-4}"
 
         if [[ "${IS_VIRTUAL:-0}" == "1" ]]; then
             mode="Virtual Simulation (ns-dut)"
@@ -178,7 +213,17 @@ main() {
         fi
     fi
 
-    printf 'Operating Mode:  %s\n' "${mode}"
+    local proto_display="IPv${IP_VERSION:-4}"
+    if [[ "${IP_VERSION:-4}" == "dual" || "${IP_VERSION:-4}" == "dual-stack" || "${IP_VERSION:-4}" == "ds" ]]; then
+        proto_display="Dual-Stack (IPv4 + IPv6)"
+    fi
+
+    printf 'Operating Mode:  %s (%s)\n' "${mode}" "${proto_display}"
+    if [[ "${IP_VERSION:-4}" == "dual" || "${IP_VERSION:-4}" == "dual-stack" || "${IP_VERSION:-4}" == "ds" ]]; then
+        printf 'Multicast Groups: IPv4=%s, IPv6=%s\n' "${MCAST_GROUP:-239.10.10.10}" "${MCAST_GROUP6:-ff0e::10:10:10}"
+    else
+        printf 'Multicast Group: %s\n' "${MCAST_GROUP:-239.10.10.10}"
+    fi
 
     printf '\n== WAN Bridge & Members (%s) ==\n' "${WAN_BRIDGE}"
     if bridge_exists "${WAN_BRIDGE}"; then

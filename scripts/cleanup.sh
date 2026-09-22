@@ -107,6 +107,7 @@ main() {
     # Direct host streamer
     stop_pidfile "${STATE_DIR}/server_direct.pid"
     pkill -f "udp://${MCAST_GROUP}:${MCAST_PORT}" 2>/dev/null || true
+    pkill -f "udp://\\[?${MCAST_GROUP6:-ff0e::10:10:10}\\]?:${MCAST_PORT}" 2>/dev/null || true
 
     # Direct WAN DHCP server
     direct_wan_dhcp_server stop 2>/dev/null || true
@@ -171,7 +172,7 @@ main() {
     done
 
     # 7. Clean runtime state files
-    rm -f "${STATE_DIR}"/*.pid "${STATE_DIR}"/*.state "${STATE_DIR}"/*.txt "${STATE_DIR}/topology_state.env" 2>/dev/null || true
+    rm -f "${STATE_DIR}"/*.pid "${STATE_DIR}"/*.state "${STATE_DIR}"/*.txt "${STATE_DIR}"/*.env 2>/dev/null || true
 
     if (( clean_logs_flag == 1 )); then
         clean_logs
