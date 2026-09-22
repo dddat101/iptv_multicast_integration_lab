@@ -18,16 +18,17 @@ Description:
   router querier election behavior, querier timeout, and query filtering.
 
 Usage:
-  ./scripts/test_foreign_querier.sh [options] [foreign_ip] [lan_interface]
+  sudo ./scripts/test_foreign_querier.sh [options] [foreign_ip] [lan_interface]
+  ./scripts/test_foreign_querier.sh -h | --help
 
 Arguments / Options:
   foreign_ip        Source IP for foreign queries (default: FOREIGN_QUERIER_IP or 192.168.1.250)
   lan_interface     LAN interface or bridge (default: LAN_IF or LAN_BRIDGE)
-  -h, --help        Show this help message
+  -h, --help        Show this help message and exit
 
 Examples:
-  ./scripts/test_foreign_querier.sh
-  ./scripts/test_foreign_querier.sh 192.168.1.254
+  sudo ./scripts/test_foreign_querier.sh
+  sudo ./scripts/test_foreign_querier.sh 192.168.1.254
 
 Suggested Next Steps:
   - Inspect DUT state:      ./scripts/dut_collector.sh collect
@@ -43,6 +44,7 @@ main() {
         fi
     done
 
+    require_root
     load_config
 
     local foreign_ip="${1:-${FOREIGN_QUERIER_IP:-192.168.1.250}}"

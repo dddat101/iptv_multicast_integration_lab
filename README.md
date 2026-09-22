@@ -140,7 +140,8 @@ iptv_multicast_integration_lab/
 ├── docs/
 │   ├── MANUAL_TEST_GUIDE.md  # Comprehensive step-by-step physical testbed manual verification guide (7 TCs)
 │   ├── SHELL_STYLE.md        # Strict mode & safety guidelines
-│   └── TEST_PLAN.md          # Test plan & compliance matrix
+│   ├── TEST_PLAN.md          # Test plan & compliance matrix
+│   └── TROUBLESHOOTING.md    # Hardware, network & Linux diagnostic runbook
 ├── tools/                    # Standalone Python 3 Multicast & IGMP tools
 │   ├── igmp_client.py        # High-performance multi-group join/leave/churn client
 │   ├── igmp_query.py         # Raw AF_PACKET IGMP query injector (General & Specific)
@@ -154,16 +155,17 @@ iptv_multicast_integration_lab/
     ├── client_dhcp.sh        # LAN DHCP client manager for STB namespaces (request | daemon | status | release)
     ├── start_wan_server.sh   # Standalone WAN IPTV server (Zero Topology, host-direct)
     ├── start_server.sh       # Streamer manager (--direct host mode or --netns mode)
-    ├── setup.sh              # Topology setup (--physical, --virtual, --wan-only, --server-only, --dhcp, --static)
+    ├── setup.sh              # Topology setup (--physical, --single, --virtual, --wan-only, --server-only)
     ├── cleanup.sh            # Idempotent cleanup of namespaces, veths, bridges, direct daemons
     ├── show_state.sh         # Displays runtime state, bridges, namespaces, groups, DHCP leases
-    ├── capture.sh            # Packet capture manager (start | stop | status)
+    ├── capture.sh            # Packet capture manager (start | stop | status | clean)
     ├── generate_media.sh     # Generates deterministic 1080p 8Mbps MPEG-TS sample
     ├── diagnose.sh           # Non-destructive pre-flight check of host, NICs, tools
     ├── start_client.sh       # VLC STB client manager (run | start | stop | status)
-    ├── scenario.sh           # Multi-phase automated smoke scenario
+    ├── scenario.sh           # Multi-phase automated smoke scenario (all | discovery | traffic | leave | verify)
     ├── test_client_quality.sh   # Multi-client concurrent throughput, jitter, and zero packet loss benchmark
     ├── test_client_stability.sh # Multi-client RFC 4541 Fast Leave isolation and zapping soak benchmark
+    ├── verify_compliance.sh  # Dual-layer verification engine with ASCII evidence timeline
     ├── verify_capture.sh     # Automated PCAP verification & latency analysis
     ├── view_stream_gui.sh    # Desktop GUI player (VLC/FFplay) on Ubuntu host with auto routing
     ├── benchmark_suite.sh    # Comprehensive benchmark suite (quality, stability, scale, churn, stress, loss)
@@ -376,7 +378,7 @@ To watch the live multicast video directly on the Ubuntu desktop:
 
 ---
 
-### Step 7: Automated End-to-End Smoke Scenario
+### Step 7: Automated End-to-End Smoke Scenario & Compliance Verification
 
 To run the complete automated qualification test (Join, stream validation, multi-client replication, Leave):
 
@@ -384,27 +386,74 @@ To run the complete automated qualification test (Join, stream validation, multi
 sudo ./scripts/scenario.sh
 ```
 
-Inspect captured traffic and latency:
+You can also run specific test phases individually:
 ```bash
-./scripts/verify_capture.sh full
+sudo ./scripts/scenario.sh --phase discovery  # Validate server discovery & DHCP leases
+sudo ./scripts/scenario.sh --phase traffic    # Capture and verify multicast packet flow
+sudo ./scripts/scenario.sh --phase leave      # Verify IGMP Leave & stream termination
+sudo ./scripts/scenario.sh --phase verify     # Run post-capture verification only
 ```
 
-Example report:
+#### Dual-Layer Compliance Verification (`verify_compliance.sh`)
+Run the automated compliance verification engine to validate wire-level PCAP packet counts, IGMPv2 signaling, join-to-data latency, DSCP/DF markings, and print an ASCII packet timeline:
+
+```bash
+# Verify the latest capture file:
+./scripts/verify_compliance.sh
+
+# Or verify a specific capture and group:
+./scripts/verify_compliance.sh captures/lan_20260922_120000.pcap 239.10.10.10
+```
+
+Example compliance report:
 ```text
+========================================================================================
+                          PACKET TIMELINE EVIDENCE                               
+========================================================================================
+Frame  | Time (s)     | Source IP            | Destination IP       | Protocol / Info         
+----------------------------------------------------------------------------------------
+1      | 0.0000       | 192.168.1.10         | 239.10.10.10         | IGMP     V2 Membership Report
+2      | 0.0452       | 10.10.0.1            | 239.10.10.10         | UDP      Source port: 5000  ...
+...
+========================================================================================
+
 ==============================================================================
-                 IPTV MULTICAST LAB - VERIFICATION REPORT                      
+               IPTV MULTICAST LAB - DUAL-LAYER COMPLIANCE AUDIT               
 ==============================================================================
-Capture File:     captures/lan_20260904_125128.pcap
-Multicast Group:  239.10.10.10 (UDP Port 5000)
-------------------------------------------------------------------------------
-  Metric / Check                      | Observed     | Result    
-------------------------------------------------------------------------------
-  IGMPv2 Membership Reports (Join)    | 4            | PASS      
-  MPEG-TS Multicast Packets           | 9885         | PASS      
-  Join-to-First-Data Latency          | 68.342 ms    | PASS      
-  IGMPv2 Leave Messages               | 1            | PASS      
+PCAP File:       captures/lan_20260922_120000.pcap
+Multicast Group: 239.10.10.10:5000
+
+--- [ LAYER 1: WIRE-LEVEL PACKET INSPECTION (PCAP) ] ---
+  [PASS] [WIRE-01] PCAP File Exists & Non-Empty
+         Detail: Size: 12.4 MB (12984512 bytes)
+  [PASS] [WIRE-02] IGMPv2 Membership Reports (Join)
+         Detail: Found 4 report packet(s)
+  [PASS] [WIRE-03] MPEG-TS Multicast Video Packets
+         Detail: 9885 packet(s) received on 239.10.10.10:5000
+  [PASS] [WIRE-04] Multicast Join-to-Data Latency
+         Detail: 45.200 ms (Join: 0.000000s, First Data: 0.045200s, threshold: 500ms)
+  [PASS] [WIRE-05] IGMPv2 Leave Group Signaling
+         Detail: Found 1 leave packet(s) to 224.0.0.2
+  [INFO] [WIRE-06] IP Header DSCP / ToS Markings
+         Detail: Observed DSCP: CS5 (ToS 0xb8)
+  [INFO] [WIRE-07] IP Header Don't Fragment (DF) Flag
+         Detail: Packets with DF flag set: 9885 / 9885
+
+--- [ LAYER 2: APPLICATION & RUNTIME STATE AUDIT ] ---
+  [PASS] [STATE-01] Streaming Process Audit
+         Detail: Media server (FFmpeg/iperf) exited cleanly after test run
+  [PASS] [STATE-02] Stale Process Check
+         Detail: No orphaned IPTV daemons or lock contention found
+
 ==============================================================================
-OVERALL RESULT: PASS (Real video streaming and IGMP signaling verified)
+COMPLIANCE SUMMARY: 7 passed, 0 failed (Total: 7 evaluated)
+OVERALL STATUS: PASS
+==============================================================================
+```
+
+You can also use the legacy quick summary tool:
+```bash
+./scripts/verify_capture.sh full
 ```
 
 ---

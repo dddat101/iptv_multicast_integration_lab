@@ -10,10 +10,14 @@ IFS=$'\n\t'
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
-load_config
 
-readonly PID_FILE="${STATE_DIR}/capture.pid"
-readonly META_FILE="${STATE_DIR}/latest_capture.txt"
+PID_FILE=""
+META_FILE=""
+
+init_capture_paths() {
+    PID_FILE="${STATE_DIR}/capture.pid"
+    META_FILE="${STATE_DIR}/latest_capture.txt"
+}
 
 usage() {
     cat <<'USAGE'
@@ -121,7 +125,14 @@ start_capture() {
     local pid=$!
     printf '%s\n' "${pid}" > "${PID_FILE}"
     printf '%s\n' "${pcap_file}" > "${META_FILE}"
-    chmod 0666 "${PID_FILE}" "${META_FILE}" 2>/dev/null || true
+    cat >"${STATE_DIR}/last_capture.env" <<EOF
+LAST_PCAP='${pcap_file}'
+LAST_TARGET='${target}'
+LAST_IFACE='${iface}'
+LAST_TIMESTAMP='${timestamp}'
+CAPTURE_TOOL='${tool}'
+EOF
+    chmod 0666 "${PID_FILE}" "${META_FILE}" "${STATE_DIR}/last_capture.env" 2>/dev/null || true
     sleep 0.5
 
     if ! kill -0 "${pid}" 2>/dev/null; then
@@ -182,6 +193,7 @@ main() {
     done
 
     load_config
+    init_capture_paths
     local action="${1:-status}"
 
     case "${action}" in

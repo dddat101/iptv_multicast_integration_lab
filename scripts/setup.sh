@@ -27,24 +27,36 @@ rollback_setup() {
 
 usage() {
     cat <<'USAGE'
+Description:
+  Initializes and configures the IPTV multicast testbed topology across Linux
+  network namespaces, L2 test bridges, veth pairs, and physical test adapters.
+  Supports Physical DUT, Single-PC Dual-NIC, Virtual Simulation, and WAN-Only modes.
+
 Usage:
   sudo ./scripts/setup.sh [options]
+  ./scripts/setup.sh -h | --help
 
 Options:
-  -p, --physical          Run in Physical DUT mode (requires dedicated USB adapters) [Default]
-  -v, --virtual, --no-dut Run in Virtual Simulation mode (self-contained, no physical DUT required)
-  -w, --wan-only          Deploy WAN side only (WAN bridge, WAN DHCP & Server; skips LAN_IF and clients)
-  -s, --server-only       Deploy Media Server only (skip STB client namespaces)
-  -n, --clients <count>   Number of STB client namespaces to emulate (default: CLIENT_COUNT in config.env)
-  --dhcp, --client-dhcp   Have STB clients obtain dynamic IP from DUT LAN DHCP [Default if CLIENT_IP_MODE=dhcp]
+  -p, --physical, --single Run in Physical DUT / Single-PC Dual-NIC mode [Default]
+  -v, --virtual, --no-dut  Run in Virtual Simulation mode (bridges namespaces via ns-dut)
+  -w, --wan-only           Deploy WAN side only (WAN bridge, WAN DHCP & Server; skips LAN)
+  -s, --server-only        Deploy Media Server only (skip STB client namespaces)
+  -n, --clients <count>    Number of STB client namespaces to emulate (default: 5)
+  --dhcp, --client-dhcp    Have STB clients obtain dynamic IP from DUT LAN DHCP
   --static, --client-static Force STB clients to use static IP configuration
-  --no-stream             Do not auto-start streaming immediately after setup
-  -h, --help              Show this help message
+  --no-stream              Do not auto-start streaming immediately after setup
+  -h, --help               Show this help message and exit
 
-Notes:
-  - If you only want to stream directly on WAN_IF with NO bridges/topology at all:
-    sudo ./scripts/start_wan_server.sh run
-    (or: sudo ./scripts/start_server.sh --direct run)
+Examples:
+  sudo ./scripts/setup.sh --virtual
+  sudo ./scripts/setup.sh --single
+  sudo ./scripts/setup.sh --physical --dhcp --clients 5
+  sudo ./scripts/setup.sh --wan-only
+
+Suggested Next Steps:
+  - Inspect running state:  ./scripts/show_state.sh
+  - Run automated scenario: sudo ./scripts/scenario.sh
+  - Teardown lab:           sudo ./scripts/cleanup.sh
 USAGE
 }
 
@@ -71,15 +83,20 @@ main() {
     while (( $# > 0 )); do
         case "$1" in
             --virtual|-v|--no-dut)     IS_VIRTUAL=1; shift ;;
-            --physical|-p)             IS_VIRTUAL=0; shift ;;
+            --physical|-p|--single)    IS_VIRTUAL=0; shift ;;
             --wan-only|-w)             wan_only=1; SERVER_ONLY=1; shift ;;
             --server-only|-s)          SERVER_ONLY=1; shift ;;
-            -n|--clients)              CLIENT_COUNT="$2"; shift 2 ;;
+            -n|--clients)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --clients option"
+                CLIENT_COUNT="$1"
+                shift
+                ;;
             --dhcp|--client-dhcp)      CLIENT_IP_MODE="dhcp"; shift ;;
             --static|--client-static)  CLIENT_IP_MODE="static"; shift ;;
             --no-stream)               auto_stream=0; shift ;;
             -h|--help)                 usage; exit 0 ;;
-            *)                         shift ;;
+            *)                         usage; exit 2 ;;
         esac
     done
 

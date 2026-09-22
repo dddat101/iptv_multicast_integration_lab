@@ -23,17 +23,18 @@ Description:
   on LAN receiver against carrier criteria (<= 1e-9).
 
 Usage:
-  ./scripts/test_packet_loss.sh [options] [num_groups] [rate_pps] [duration_sec]
+  sudo ./scripts/test_packet_loss.sh [options] [num_groups] [rate_pps] [duration_sec]
+  ./scripts/test_packet_loss.sh -h | --help
 
 Arguments / Options:
   num_groups     Number of multicast groups to test (default: 12)
   rate_pps       Total transmission rate in packets/sec (default: 1200)
   duration_sec   Test duration in seconds (default: 15)
-  -h, --help     Show this help message
+  -h, --help     Show this help message and exit
 
 Examples:
-  ./scripts/test_packet_loss.sh
-  ./scripts/test_packet_loss.sh 8 800 10
+  sudo ./scripts/test_packet_loss.sh
+  sudo ./scripts/test_packet_loss.sh 8 800 10
 
 Suggested Next Steps:
   - Inspect DUT state:      ./scripts/dut_collector.sh collect
@@ -49,6 +50,7 @@ main() {
         fi
     done
 
+    require_root
     load_config
 
     local num_groups="${1:-${LOSS_TEST_GROUPS:-12}}"

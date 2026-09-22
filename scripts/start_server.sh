@@ -15,23 +15,37 @@ IFS=$'\n\t'
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
-load_config
+PID_FILE=""
+LOG_FILE=""
+DIRECT_PID_FILE=""
+DIRECT_LOG_FILE=""
+STATE_MODE_FILE=""
+STATE_IFACE_FILE=""
+STATE_IFACE_TYPE_FILE=""
 
-readonly PID_FILE="${STATE_DIR}/server.pid"
-readonly LOG_FILE="${LOG_DIR}/server.log"
-readonly DIRECT_PID_FILE="${STATE_DIR}/server_direct.pid"
-readonly DIRECT_LOG_FILE="${LOG_DIR}/server_direct.log"
-readonly STATE_MODE_FILE="${STATE_DIR}/server_mode.txt"
-readonly STATE_IFACE_FILE="${STATE_DIR}/server_iface.txt"
-readonly STATE_IFACE_TYPE_FILE="${STATE_DIR}/server_iface_type.txt"
+init_server_paths() {
+    PID_FILE="${STATE_DIR}/server.pid"
+    LOG_FILE="${LOG_DIR}/server.log"
+    DIRECT_PID_FILE="${STATE_DIR}/server_direct.pid"
+    DIRECT_LOG_FILE="${LOG_DIR}/server_direct.log"
+    STATE_MODE_FILE="${STATE_DIR}/server_mode.txt"
+    STATE_IFACE_FILE="${STATE_DIR}/server_iface.txt"
+    STATE_IFACE_TYPE_FILE="${STATE_DIR}/server_iface_type.txt"
+}
 
 TARGET_IFACE=""
 STREAM_LOCAL_IP=""
 
 usage() {
     cat <<'USAGE'
+Description:
+  FFmpeg MPEG-TS UDP multicast streamer manager. Streams 1080p video over UDP
+  multicast either directly on host physical Ethernet adapters (--direct) or inside
+  isolated network namespaces (--netns) attached to L2 test bridges.
+
 Usage:
   ./scripts/start_server.sh [options] [command]
+  ./scripts/start_server.sh -h | --help
 
 Commands:
   run             Run streaming interactively in the foreground [Default if TTY]
@@ -51,22 +65,20 @@ Options:
                   Override multicast destination IP (default: from config, e.g. 239.10.10.10)
   -p, --port <port>
                   Override UDP destination port (default: from config, e.g. 5000)
-  -h, --help      Show this help message
+  -h, --help      Show this help message and exit
 
 Examples:
-  # Stream out corporate/lab interface eno1 (Automated Option 2):
   sudo ./scripts/start_server.sh -i eno1 start
   sudo ./scripts/start_server.sh -i eno1 run
-  sudo ./scripts/start_server.sh stop
-  sudo ./scripts/start_server.sh status
-
-  # Standalone Dedicated WAN IPTV Server (Zero Topology):
   sudo ./scripts/start_server.sh --direct start
+  sudo ./scripts/start_server.sh start
+  ./scripts/start_server.sh status
   sudo ./scripts/start_server.sh stop
 
-  # Namespace Topology Mode:
-  sudo ./scripts/start_server.sh start
-  sudo ./scripts/start_server.sh stop
+Suggested Next Steps:
+  - Inspect stream status: ./scripts/start_server.sh status
+  - Start STB client:      sudo ./scripts/start_client.sh 1 start
+  - Run scenario:          sudo ./scripts/scenario.sh
 USAGE
 }
 
@@ -373,7 +385,15 @@ show_status() {
 }
 
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
+    init_server_paths
     local mode="auto"
     local cmd=""
 

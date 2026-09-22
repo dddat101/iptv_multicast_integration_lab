@@ -18,17 +18,18 @@ Description:
   at elevated packet rates on WAN to stress test router querier and IGMP processing.
 
 Usage:
-  ./scripts/test_query_stress.sh [options] [multicast_group] [rate_pps] [duration_sec]
+  sudo ./scripts/test_query_stress.sh [options] [multicast_group] [rate_pps] [duration_sec]
+  ./scripts/test_query_stress.sh -h | --help
 
 Arguments / Options:
   multicast_group   Target multicast group (default: MCAST_GROUP or 239.10.10.10)
   rate_pps          Query packet rate in queries/sec (default: 250)
   duration_sec      Duration in seconds (default: 10)
-  -h, --help        Show this help message
+  -h, --help        Show this help message and exit
 
 Examples:
-  ./scripts/test_query_stress.sh
-  ./scripts/test_query_stress.sh 239.10.10.10 500 5
+  sudo ./scripts/test_query_stress.sh
+  sudo ./scripts/test_query_stress.sh 239.10.10.10 500 5
 
 Suggested Next Steps:
   - Inspect DUT state:      ./scripts/dut_collector.sh collect
@@ -44,6 +45,7 @@ main() {
         fi
     done
 
+    require_root
     load_config
 
     local group="${1:-${MCAST_GROUP:-239.10.10.10}}"

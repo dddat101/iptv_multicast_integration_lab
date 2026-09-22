@@ -18,6 +18,12 @@ log_error()   { printf '\e[1;31m[ERROR]\e[0m   %s\n' "$*" >&2; }
 log_step()    { printf '\e[1;36m===> %s\e[0m\n' "$*"; }
 die()         { log_error "$*"; exit 1; }
 
+log_debug() {
+    if [[ "${DEBUG:-0}" == "1" || "${VERBOSE:-0}" == "1" ]]; then
+        printf '\e[1;34m[DEBUG]\e[0m   %s\n' "$*"
+    fi
+}
+
 print_header() {
     local title="${1:-}"
     printf '==================================================================\n'
@@ -32,7 +38,6 @@ print_section() {
     printf '\n--- [%s] ---\n' "${section}"
 }
 
-
 require_root() {
     [[ ${EUID} -eq 0 ]] || die "This script requires root privileges. Please run with sudo."
 }
@@ -41,9 +46,18 @@ is_root() {
     [[ ${EUID} -eq 0 ]]
 }
 
-require_cmd() {
+require_command() {
     local cmd="$1"
     command -v "${cmd}" >/dev/null 2>&1 || die "Missing required command: ${cmd}"
+}
+
+require_cmd() {
+    require_command "$@"
+}
+
+check_command() {
+    local cmd="$1"
+    command -v "${cmd}" >/dev/null 2>&1
 }
 
 load_config() {
@@ -62,8 +76,11 @@ load_config() {
     source "${config_file}"
 
     # Set defaults for optional parameters
+    : "${LAB_ROLE:=single}"
+    : "${TOPOLOGY_MODE:=physical}"
     : "${IS_VIRTUAL:=0}"
     : "${SERVER_ONLY:=0}"
+    : "${RESTORE_INTERFACES_ON_CLEANUP:=1}"
     : "${WAN_BRIDGE:=br-test-wan}"
     : "${LAN_BRIDGE:=br-test-lan}"
     : "${WAN_NS:=ns-wan}"
@@ -102,6 +119,17 @@ load_config() {
     : "${LOG_DIR:=logs}"
     : "${STATE_DIR:=state}"
     : "${CAPTURE_FILTER:=igmp or (udp and port 5000)}"
+    : "${TCPDUMP_BIN:=tcpdump}"
+    : "${TSHARK_BIN:=tshark}"
+
+    # Auto-detect Python Virtualenv
+    if [[ -z "${PYTHON_BIN:-}" ]]; then
+        if [[ -x "${PROJECT_ROOT}/.venv/bin/python3" ]]; then
+            PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python3"
+        else
+            PYTHON_BIN="python3"
+        fi
+    fi
 
     # Resolve relative paths to absolute paths
     if [[ "${CAPTURE_DIR}" != /* ]]; then CAPTURE_DIR="${PROJECT_ROOT}/${CAPTURE_DIR}"; fi
@@ -129,7 +157,7 @@ clean_captures() {
     ensure_runtime_dirs
     log_info "Cleaning PCAP capture files in ${CAPTURE_DIR}..."
     find "${CAPTURE_DIR}" -mindepth 1 ! -name '.gitkeep' -delete 2>/dev/null || true
-    rm -f "${STATE_DIR}/latest_capture.txt" 2>/dev/null || true
+    rm -f "${STATE_DIR}/last_capture.env" "${STATE_DIR}/latest_capture.txt" 2>/dev/null || true
     log_info "Captures directory cleaned."
 }
 
@@ -145,6 +173,7 @@ is_pidfile_running() {
 
 stop_pidfile() {
     local pidfile="$1"
+    local name="${2:-process}"
     local pid=""
     local attempt
 
@@ -153,14 +182,14 @@ stop_pidfile() {
 
     if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
         kill -INT "${pid}" 2>/dev/null || true
-        for attempt in {1..10}; do
+        for attempt in {1..15}; do
             kill -0 "${pid}" 2>/dev/null || break
             sleep 0.1
         done
         if kill -0 "${pid}" 2>/dev/null; then
             kill -TERM "${pid}" 2>/dev/null || true
         fi
-        for attempt in {1..10}; do
+        for attempt in {1..15}; do
             kill -0 "${pid}" 2>/dev/null || break
             sleep 0.1
         done
@@ -169,6 +198,46 @@ stop_pidfile() {
         fi
     fi
     rm -f "${pidfile}"
+}
+
+start_daemon() {
+    local pid_file="$1" log_file="$2" service_name="$3" exec_ns="${4:-}"
+    shift 4 || true
+    local cmd=("$@")
+
+    if is_pidfile_running "${pid_file}"; then
+        log_warn "${service_name} is already running (PID: $(cat "${pid_file}"))."
+        return 0
+    fi
+    log_info "Starting ${service_name}..."
+    local prefix=()
+    if [[ -n "${exec_ns}" ]] && ns_exists "${exec_ns}"; then
+        prefix=("ip" "netns" "exec" "${exec_ns}")
+    fi
+    "${prefix[@]}" nohup "${cmd[@]}" > "${log_file}" 2>&1 &
+    local daemon_pid=$!
+    echo "${daemon_pid}" > "${pid_file}"
+    chmod 0666 "${pid_file}" "${log_file}" 2>/dev/null || true
+    sleep 0.2
+    if kill -0 "${daemon_pid}" 2>/dev/null; then
+        log_info "${service_name} running (PID: ${daemon_pid}, Log: ${log_file})"
+        return 0
+    else
+        log_error "Failed to start ${service_name}! Check log: ${log_file}"
+        return 1
+    fi
+}
+
+stop_process_by_pattern() {
+    local pattern="$1" name="${2:-processes matching '${pattern}'}"
+    if pgrep -f "${pattern}" >/dev/null 2>&1; then
+        log_info "Terminating ${name}..."
+        pkill -INT -f "${pattern}" 2>/dev/null || true
+        sleep 0.3
+        pgrep -f "${pattern}" >/dev/null 2>&1 && pkill -TERM -f "${pattern}" 2>/dev/null || true
+        sleep 0.5
+        pgrep -f "${pattern}" >/dev/null 2>&1 && pkill -9 -f "${pattern}" 2>/dev/null || true
+    fi
 }
 
 iface_exists_root() {
@@ -184,7 +253,7 @@ iface_exists_ns() {
 
 ns_exists() {
     local ns="$1"
-    ip netns list 2>/dev/null | awk '{print $1}' | grep -Fxq "${ns}"
+    (ip netns list 2>/dev/null || true) | awk '{print $1}' | grep -Fxq "${ns}"
 }
 
 bridge_exists() {
@@ -206,15 +275,54 @@ assert_safe_test_if() {
 
     # Protect host default route
     if ip route show default 2>/dev/null | grep -Eq "dev[[:space:]]+${iface}([[:space:]]|$)"; then
-        die "Interface ${iface} carries host default route! Use a dedicated Ethernet adapter."
+        die "Interface ${iface} carries host default route! Cowardly refusing to disrupt host connectivity."
     fi
 
-    # Smart NetworkManager unmanage & flush
+    # Smart NetworkManager unmanage
+    command -v nmcli >/dev/null 2>&1 && nmcli device set "${iface}" managed no 2>/dev/null || true
+
+    # Flush any stale host IP assignments
     if ip -4 addr show dev "${iface}" 2>/dev/null | grep -q 'inet '; then
-        log_warn "Interface ${iface} has host IPv4 address. Flushing and setting unmanaged..."
-        command -v nmcli >/dev/null 2>&1 && nmcli device set "${iface}" managed no 2>/dev/null || true
+        log_warn "Interface ${iface} has host IPv4 address. Flushing stale address..."
         ip addr flush dev "${iface}" 2>/dev/null || true
     fi
+}
+
+exec_in_ns() {
+    local ns="$1"
+    shift
+    if [[ -n "${ns}" ]] && ns_exists "${ns}"; then
+        ip netns exec "${ns}" "$@"
+    else
+        "$@"
+    fi
+}
+
+is_ip_reachable() {
+    local target="$1"
+    local timeout="${2:-1}"
+    local ns="${3:-}"
+    if [[ -n "${ns}" ]] && ns_exists "${ns}"; then
+        ip netns exec "${ns}" ping -c 1 -W "${timeout}" "${target}" >/dev/null 2>&1
+    else
+        ping -c 1 -W "${timeout}" "${target}" >/dev/null 2>&1
+    fi
+}
+
+wait_for_ping() {
+    local target="$1"
+    local timeout="${2:-10}"
+    local ns="${3:-}"
+    local elapsed=0
+    while ! is_ip_reachable "${target}" 1 "${ns}"; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if (( elapsed >= timeout )); then
+            log_warn "Timeout waiting for ping response from ${target} after ${timeout}s"
+            return 1
+        fi
+    done
+    return 0
 }
 
 bridge_create() {
@@ -223,6 +331,7 @@ bridge_create() {
         ip link add name "${bridge}" type bridge
     fi
     ip addr flush dev "${bridge}" 2>/dev/null || true
+    sysctl -q -w "net.ipv6.conf.${bridge}.disable_ipv6=1" 2>/dev/null || true
     ip link set dev "${bridge}" type bridge stp_state 0 mcast_snooping 0 2>/dev/null || true
     ip link set dev "${bridge}" up
 }
@@ -542,7 +651,21 @@ EOF
 namespace_ip() {
     local ns="${1:-${WAN_NS}}"
     local iface="${2:-eth0}"
-    ip netns exec "${ns}" ip -4 -o addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
+    if ns_exists "${ns}"; then
+        (ip netns exec "${ns}" ip -4 -o addr show dev "${iface}" 2>/dev/null || true) | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo ""
+    else
+        (ip -4 -o addr show dev "${iface}" 2>/dev/null || true) | awk '{print $4}' | cut -d/ -f1 | head -n1 || echo ""
+    fi
+}
+
+namespace_mac() {
+    local ns="${1:-${WAN_NS}}"
+    local iface="${2:-eth0}"
+    if ns_exists "${ns}"; then
+        (ip netns exec "${ns}" cat "/sys/class/net/${iface}/address" 2>/dev/null || true) | head -n1
+    else
+        (cat "/sys/class/net/${iface}/address" 2>/dev/null || true) | head -n1
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -732,5 +855,148 @@ EOF
             fi
             ;;
     esac
+}
+
+# ------------------------------------------------------------------------------
+# Socket & Port Synchronization (Eliminates arbitrary sleeps)
+# ------------------------------------------------------------------------------
+is_port_listening() {
+    local port="$1"
+    local host="${2:-127.0.0.1}"
+    local ns="${3:-}"
+    if [[ -n "${ns}" ]] && ns_exists "${ns}"; then
+        ip netns exec "${ns}" python3 -c "import socket; s = socket.socket(); s.settimeout(0.5); s.connect(('${host}', int(${port}))); s.close()" >/dev/null 2>&1
+    else
+        python3 -c "import socket; s = socket.socket(); s.settimeout(0.5); s.connect(('${host}', int(${port}))); s.close()" >/dev/null 2>&1
+    fi
+}
+
+wait_for_port() {
+    local port="$1"
+    local host="${2:-127.0.0.1}"
+    local timeout="${3:-10}"
+    local ns="${4:-}"
+    local elapsed=0
+    while ! is_port_listening "${port}" "${host}" "${ns}"; do
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+        if (( elapsed >= timeout * 2 )); then
+            log_warn "Timeout waiting for port ${port} on ${host} after ${timeout}s"
+            return 1
+        fi
+    done
+    return 0
+}
+
+wait_for_http() {
+    local url="$1"
+    local expected_code="${2:-200}"
+    local timeout="${3:-10}"
+    local ns="${4:-}"
+    local elapsed=0
+    local curl_cmd=("curl" "-sk" "-o" "/dev/null" "-w" "%{http_code}" "--max-time" "1" "${url}")
+    if [[ -n "${ns}" ]] && ns_exists "${ns}"; then
+        curl_cmd=("ip" "netns" "exec" "${ns}" "${curl_cmd[@]}")
+    fi
+    while true; do
+        local code
+        code="$("${curl_cmd[@]}" 2>/dev/null || echo "000")"
+        if [[ "${code}" == "${expected_code}" || ("${expected_code}" == "any" && "${code}" != "000") ]]; then
+            return 0
+        fi
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+        if (( elapsed >= timeout * 2 )); then
+            log_warn "Timeout waiting for HTTP URL ${url} (code: ${code}) after ${timeout}s"
+            return 1
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Remote DUT Management via SSH
+# ------------------------------------------------------------------------------
+run_dut_cmd() {
+    local cmd="$1"
+    local timeout="${2:-10}"
+    if [[ -z "${DUT_SSH_HOST:-}" || -z "${cmd}" ]]; then
+        return 0
+    fi
+    require_command ssh
+    local ssh_opts=(-o ConnectTimeout="${timeout}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR)
+    [[ -n "${DUT_SSH_PORT:-}" ]] && ssh_opts+=(-p "${DUT_SSH_PORT}")
+    [[ -n "${DUT_SSH_KEY:-}" && -f "${DUT_SSH_KEY}" ]] && ssh_opts+=(-i "${DUT_SSH_KEY}")
+    ssh "${ssh_opts[@]}" "${DUT_SSH_USER:-root}@${DUT_SSH_HOST}" "${cmd}"
+}
+
+is_dut_ssh_ready() {
+    [[ -z "${DUT_SSH_HOST:-}" ]] && return 1
+    run_dut_cmd "echo ok" 3 >/dev/null 2>&1
+}
+
+# ------------------------------------------------------------------------------
+# PCAP Evidence & Inspection Utilities
+# ------------------------------------------------------------------------------
+get_latest_pcap() {
+    if [[ -f "${STATE_DIR}/last_capture.env" ]]; then
+        local pcap_from_env
+        pcap_from_env="$(grep '^LAST_PCAP=' "${STATE_DIR}/last_capture.env" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)"
+        if [[ -n "${pcap_from_env}" && -f "${pcap_from_env}" ]]; then
+            printf '%s\n' "${pcap_from_env}"
+            return 0
+        fi
+    fi
+    if [[ -f "${STATE_DIR}/latest_capture.txt" ]]; then
+        local pcap_from_txt
+        pcap_from_txt="$(cat "${STATE_DIR}/latest_capture.txt" 2>/dev/null || true)"
+        if [[ -n "${pcap_from_txt}" && -f "${pcap_from_txt}" ]]; then
+            printf '%s\n' "${pcap_from_txt}"
+            return 0
+        fi
+    fi
+    if [[ -d "${CAPTURE_DIR}" ]]; then
+        local newest
+        newest="$(find "${CAPTURE_DIR}" -name '*.pcap*' -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | awk '{print $2}' || true)"
+        if [[ -n "${newest}" && -f "${newest}" ]]; then
+            printf '%s\n' "${newest}"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+format_bytes() {
+    local bytes="${1:-0}"
+    if (( bytes < 1024 )); then
+        printf '%d B' "${bytes}"
+    elif (( bytes < 1048576 )); then
+        printf '%.1f KB' "$((bytes * 10 / 1024))e-1"
+    elif (( bytes < 1073741824 )); then
+        printf '%.1f MB' "$((bytes * 10 / 1048576))e-1"
+    else
+        printf '%.1f GB' "$((bytes * 10 / 1073741824))e-1"
+    fi
+}
+
+detect_tshark_field() {
+    local fields_cache="$1"
+    shift
+    local candidate
+    for candidate in "$@"; do
+        if grep -Fxq "${candidate}" <<< "${fields_cache}"; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+validate_cert_expiry() {
+    local cert_file="$1"
+    local days_check="${2:-7}"
+    [[ -f "${cert_file}" ]] || return 1
+    require_command openssl
+    local seconds=$(( days_check * 86400 ))
+    openssl x509 -checkend "${seconds}" -noout -in "${cert_file}" >/dev/null 2>&1
 }
 

@@ -14,8 +14,14 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
     cat <<'USAGE'
+Description:
+  Manages VLC (cvlc) IPTV client instances inside STB network namespaces.
+  Joins multicast groups via native kernel IP_ADD_MEMBERSHIP socket options,
+  receiving MPEG-TS video streams and generating standard IGMPv2 Reports/Leaves.
+
 Usage:
   sudo ./scripts/start_client.sh [target] [command]
+  ./scripts/start_client.sh -h | --help
 
 Targets:
   <N> | client<N> Client index (e.g. 1, 2, 3...) [Default: 1]
@@ -28,11 +34,19 @@ Commands:
   stop            Stop background VLC receiver
   status          Show status of VLC receiver and IGMP group membership
 
+Options:
+  -h, --help      Show this help message and exit
+
 Examples:
   sudo ./scripts/start_client.sh 1 run
   sudo ./scripts/start_client.sh all start
   sudo ./scripts/start_client.sh all status
   sudo ./scripts/start_client.sh all stop
+
+Suggested Next Steps:
+  - Verify compliance:     ./scripts/verify_compliance.sh
+  - Run benchmark suite:   sudo ./scripts/benchmark_suite.sh all
+  - Inspect lab state:     ./scripts/show_state.sh
 USAGE
 }
 
@@ -217,7 +231,7 @@ main() {
         start)  start_background "${client_name}" ;;
         stop)   stop_background "${client_name}" ;;
         status) show_status "${client_name}" ;;
-        -h|--help) usage ;;
+        -h|--help) usage; exit 0 ;;
         *)      usage; exit 2 ;;
     esac
 }

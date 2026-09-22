@@ -13,22 +13,33 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
     cat <<'USAGE'
+Description:
+  Evaluates multicast streaming quality across N STB client namespaces simultaneously.
+  Measures concurrent throughput, sequence packet loss, jitter, and QoS delivery
+  from the media sender through the DUT router to each client.
+
 Usage:
   sudo ./scripts/test_client_quality.sh [options]
+  ./scripts/test_client_quality.sh -h | --help
 
 Options:
   -c, --clients <list|all> Comma-separated client indices/names or 'all' [Default: all]
-  -g, --groups <groups>    Multicast group(s) to test (e.g. 239.100.1.1-4 or 239.10.10.10) [Default: 239.100.1.1-4]
+  -g, --groups <groups>    Multicast group(s) to test (e.g. 239.100.1.1-4) [Default: 239.100.1.1-4]
   -r, --rate <pps>         Total packet rate in packets/sec [Default: 1000]
   -s, --payload <bytes>    UDP payload size in bytes [Default: 1200]
   -d, --duration <sec>     Test duration in seconds [Default: 10]
-  -p, --port <port>        UDP port [Default: 5000]
-  -h, --help               Show this help message
+  -p, --port <port>        UDP destination port [Default: 5000]
+  -h, --help               Show this help message and exit
 
 Examples:
   sudo ./scripts/test_client_quality.sh
   sudo ./scripts/test_client_quality.sh --clients 1,2,3 --duration 15
   sudo ./scripts/test_client_quality.sh --rate 2000 --groups 239.100.1.1-8
+
+Suggested Next Steps:
+  - Run stability test:    sudo ./scripts/test_client_stability.sh all
+  - Run scale benchmark:   sudo ./scripts/test_scale.sh
+  - Inspect lab state:     ./scripts/show_state.sh
 USAGE
 }
 
@@ -40,6 +51,13 @@ cleanup_quality_test() {
 }
 
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
 
     local target_clients="all"
@@ -51,14 +69,44 @@ main() {
 
     while (( $# > 0 )); do
         case "$1" in
-            -c|--clients)   target_clients="$2"; shift 2 ;;
-            -g|--groups)    groups="$2"; shift 2 ;;
-            -r|--rate)      rate="$2"; shift 2 ;;
-            -s|--payload)   payload="$2"; shift 2 ;;
-            -d|--duration)  duration="$2"; shift 2 ;;
-            -p|--port)      port="$2"; shift 2 ;;
-            -h|--help)      usage; exit 0 ;;
-            *)              usage; exit 2 ;;
+            -c|--clients)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --clients option"
+                target_clients="$1"
+                shift
+                ;;
+            -g|--groups)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --groups option"
+                groups="$1"
+                shift
+                ;;
+            -r|--rate)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --rate option"
+                rate="$1"
+                shift
+                ;;
+            -s|--payload)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --payload option"
+                payload="$1"
+                shift
+                ;;
+            -d|--duration)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --duration option"
+                duration="$1"
+                shift
+                ;;
+            -p|--port)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --port option"
+                port="$1"
+                shift
+                ;;
+            -h|--help) usage; exit 0 ;;
+            *)         usage; exit 2 ;;
         esac
     done
 

@@ -13,11 +13,17 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
     cat <<'USAGE'
+Description:
+  Automated master test runner executing comprehensive IPTV multicast RFC benchmarks:
+  concurrent QoS quality, Fast Leave isolation, capacity scale, rapid churn,
+  query stress, sequence packet loss, querier election, and router diagnostics.
+
 Usage:
-  sudo ./scripts/benchmark_suite.sh [all|quality|stability|scale|churn|stress|loss|querier|diagnostics|pcap]
+  sudo ./scripts/benchmark_suite.sh [benchmark]
+  ./scripts/benchmark_suite.sh -h | --help
 
 Benchmarks:
-  all          Execute all benchmark tests and generate comprehensive report
+  all          Execute all benchmark tests and generate comprehensive report [Default]
   quality      Multi-client concurrent packet loss & QoS benchmark
   stability    Multi-client Fast Leave isolation & zapping soak benchmark
   scale        Multicast group capacity scale benchmark
@@ -27,6 +33,20 @@ Benchmarks:
   querier      Foreign LAN Querier injection & election benchmark
   diagnostics  Collect router multicast routing and snooping state
   pcap         Inspect packet capture headers and timing metrics
+
+Options:
+  -h, --help   Show this help message and exit
+
+Examples:
+  sudo ./scripts/benchmark_suite.sh all
+  sudo ./scripts/benchmark_suite.sh quality
+  sudo ./scripts/benchmark_suite.sh scale
+  ./scripts/benchmark_suite.sh diagnostics
+
+Suggested Next Steps:
+  - Verify PCAP compliance: ./scripts/verify_compliance.sh
+  - Inspect runtime state:  ./scripts/show_state.sh
+  - Teardown when done:     sudo ./scripts/cleanup.sh
 USAGE
 }
 
@@ -243,6 +263,13 @@ run_all_benchmarks() {
 }
 
 main() {
+    for arg in "$@"; do
+        if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+            usage
+            exit 0
+        fi
+    done
+
     load_config
     local suite="${1:-all}"
 

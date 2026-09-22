@@ -13,8 +13,13 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
     cat <<'USAGE'
+Description:
+  Evaluates IGMP snooping stability and Fast Leave isolation (RFC 4541) across
+  multiple STB clients under rapid channel churn and zapping soak conditions.
+
 Usage:
-  sudo ./scripts/test_client_stability.sh [all|fast-leave|churn-soak] [options]
+  sudo ./scripts/test_client_stability.sh [mode] [options]
+  ./scripts/test_client_stability.sh -h | --help
 
 Modes:
   all         Run both Fast Leave isolation and Concurrent Zapping soak [Default]
@@ -24,15 +29,20 @@ Modes:
 Options:
   --cycles <N>           Churn cycles for churner client in fast-leave test [Default: 20]
   --churn-interval <ms>  Interval between join/leave in milliseconds [Default: 100]
-  --soak-duration <sec>  Duration for multi-client zapping soak [Default: 20]
+  --soak-duration <sec>  Duration for multi-client zapping soak in seconds [Default: 20]
   --groups <range>       Channels for zapping soak [Default: 239.100.1.1-8]
   --group <ip>           Channel for fast-leave isolation test [Default: 239.100.1.1]
-  -h, --help             Show this help message
+  -h, --help             Show this help message and exit
 
 Examples:
   sudo ./scripts/test_client_stability.sh all
   sudo ./scripts/test_client_stability.sh fast-leave --cycles 30
   sudo ./scripts/test_client_stability.sh churn-soak --soak-duration 30
+
+Suggested Next Steps:
+  - Run quality benchmark: sudo ./scripts/test_client_quality.sh
+  - Run scale benchmark:   sudo ./scripts/test_scale.sh
+  - Inspect lab state:     ./scripts/show_state.sh
 USAGE
 }
 
@@ -325,11 +335,36 @@ main() {
 
     while (( $# > 0 )); do
         case "$1" in
-            --cycles)          cycles="$2"; shift 2 ;;
-            --churn-interval)  churn_interval="$2"; shift 2 ;;
-            --soak-duration)   soak_duration="$2"; shift 2 ;;
-            --groups)          zap_groups="$2"; shift 2 ;;
-            --group)           single_group="$2"; shift 2 ;;
+            --cycles)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --cycles option"
+                cycles="$1"
+                shift
+                ;;
+            --churn-interval)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --churn-interval option"
+                churn_interval="$1"
+                shift
+                ;;
+            --soak-duration)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --soak-duration option"
+                soak_duration="$1"
+                shift
+                ;;
+            --groups)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --groups option"
+                zap_groups="$1"
+                shift
+                ;;
+            --group)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --group option"
+                single_group="$1"
+                shift
+                ;;
             -h|--help)         usage; exit 0 ;;
             *)                 usage; exit 2 ;;
         esac

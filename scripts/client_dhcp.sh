@@ -11,28 +11,43 @@ IFS=$'\n\t'
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
-load_config
 
 usage() {
     cat <<'USAGE'
+Description:
+  Manages DHCP client (udhcpc) leases and background renewal daemons inside STB
+  client network namespaces. Emulates real hardware STBs with DHCP Option 12
+  (Host Name) and Option 60 (Vendor Class Identifier: IPTV_STB).
+
 Usage:
   sudo ./scripts/client_dhcp.sh [action] [target] [hostname]
+  ./scripts/client_dhcp.sh status [target]
+  ./scripts/client_dhcp.sh -h | --help
 
 Actions:
   request  [client|all] [hostname]  One-shot DHCP lease request
-  daemon   [client|all] [hostname]  Start background udhcpc daemon to maintain lease
+  daemon   [client|all] [hostname]  Start background udhcpc daemon to maintain/renew lease
   release  [client|all]             Release DHCP lease and flush IP
-  status   [client|all]             Show assigned IP, hostname, MAC, and lease status
+  status   [client|all]             Show assigned IP, hostname, MAC, and lease status [Default]
 
 Targets:
-  all           All STB client namespaces (Default)
+  all           All STB client namespaces [Default]
   <N> | client<N> Client index (e.g. 1, 2, 3...)
   <name>        Explicit namespace name (e.g. ns-stb3)
+
+Options:
+  -h, --help    Show this help message and exit
 
 Examples:
   sudo ./scripts/client_dhcp.sh request all
   sudo ./scripts/client_dhcp.sh daemon 1
   ./scripts/client_dhcp.sh status all
+  sudo ./scripts/client_dhcp.sh release all
+
+Suggested Next Steps:
+  - Check client status:   ./scripts/client_dhcp.sh status all
+  - Start client stream:   sudo ./scripts/start_client.sh 1 start
+  - Inspect lab state:     ./scripts/show_state.sh
 USAGE
 }
 
@@ -107,7 +122,7 @@ request_lease() {
     fi
 }
 
-start_daemon() {
+start_dhcp_daemon() {
     local name="$1"
     local hostname="$2"
     local pidfile="${STATE_DIR}/udhcpc-${name}.pid"
@@ -253,7 +268,7 @@ run_on_target() {
 
         case "${action}" in
             request) request_lease "${name}" "${hostname}" || true ;;
-            daemon)  start_daemon "${name}" "${hostname}" || true ;;
+            daemon)  start_dhcp_daemon "${name}" "${hostname}" || true ;;
             release) release_lease "${name}" ;;
             status)  show_status "${name}" ;;
         esac

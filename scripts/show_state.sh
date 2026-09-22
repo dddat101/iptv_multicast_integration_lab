@@ -227,6 +227,25 @@ main() {
     printf '\n'
     "${SCRIPT_DIR}/capture.sh" status || true
 
+    printf '\n== Supervised Daemons & Stale PID Audit ==\n'
+    local pid_count=0
+    for pidfile in "${STATE_DIR}"/*.pid; do
+        if [[ -f "${pidfile}" ]]; then
+            pid_count=$((pid_count + 1))
+            local sname pid
+            sname="$(basename "${pidfile}" .pid)"
+            pid="$(cat "${pidfile}" 2>/dev/null || true)"
+            if is_pidfile_running "${pidfile}"; then
+                printf '  %-28s -> \e[1;32mRUNNING\e[0m (PID: %s)\n' "${sname}" "${pid}"
+            else
+                printf '  %-28s -> \e[1;31mSTALE PID FILE\e[0m (Process %s not found)\n' "${sname}" "${pid:-empty}"
+            fi
+        fi
+    done
+    if (( pid_count == 0 )); then
+        printf '  <No registered background daemon PID files>\n'
+    fi
+
     printf '==============================================================================\n'
 }
 
