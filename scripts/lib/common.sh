@@ -823,6 +823,7 @@ wan_dhcp_server() {
     local ip_version="${2:-${IP_VERSION:-4}}"
     local pidfile_dnsmasq="${STATE_DIR}/dnsmasq-wan.pid"
     local pidfile_dnsmasq_v4="${STATE_DIR}/dnsmasq-wan-v4.pid"
+    local pidfile_kea4="${STATE_DIR}/kea-dhcp4.pid"
     local pidfile_kea="${STATE_DIR}/kea-dhcp6.pid"
     local pidfile_radvd="${STATE_DIR}/radvd.pid"
     local conffile_dnsmasq="${STATE_DIR}/dnsmasq-wan.conf"
