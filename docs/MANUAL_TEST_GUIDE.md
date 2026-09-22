@@ -96,12 +96,17 @@ For testers using a Windows 10/11 laptop or desktop as a client:
    ```
    *(Or launch `.\scripts\windows\run_client.bat` and choose option `[6]`)*.
    *This automatically:*
-   - Creates a Windows Defender Firewall inbound allow rule for **UDP Port 5000**.
-   - Adds a static multicast route: `route add 224.0.0.0 mask 240.0.0.0 <LocalIP> metric 1` to route IGMP/Multicast traffic strictly via Ethernet, resolving Wi-Fi vs Ethernet routing conflicts.
+   - Creates a Windows Defender Firewall inbound allow rule for **UDP Port 5000** (supporting both IPv4 & IPv6).
+   - Adds a static IPv4 multicast route: `route add 224.0.0.0 mask 240.0.0.0 <LocalIP> metric 1` to route IGMP/Multicast traffic strictly via Ethernet, resolving Wi-Fi vs Ethernet routing conflicts.
+   - Adds an IPv6 multicast route: `ff00::/8` to route MLD/IPv6 Multicast traffic via Ethernet.
 
 3. **Verify Environment Status:**
    ```powershell
+   # IPv4 status:
    .\scripts\windows\run_client.ps1 -Mode Status
+
+   # IPv6 status:
+   .\scripts\windows\run_client.ps1 -IPv6 -Mode Status
    ```
 
 ---
@@ -131,7 +136,10 @@ For testers using a Windows 10/11 laptop or desktop as a client:
      ```powershell
      .\scripts\windows\run_client.bat
      # Select Option [1] -> Enter Channel 1 (or run via CLI below):
+     # IPv4 (239.10.10.10):
      .\scripts\windows\run_client.ps1 -Mode Play -Channel 1
+     # IPv6 (ff0e::10:10:10):
+     .\scripts\windows\run_client.ps1 -IPv6 -Mode Play -Channel 1
      ```
 3. **Router DUT (SSH):** Check CPU utilization and SoftIRQ under full load:
    ```sh
@@ -348,15 +356,22 @@ The Windows automation suite provides four flexible operating options:
 * **Option 2: Ultra-Low RAM Scale Engine (< 15 MB RAM Total — Zero OOM Risk):**
   Joins all 32 channels simultaneously via native `.NET` UDP Sockets (`System.Net.Sockets.UdpClient`), joins groups on the router, samples incoming UDP packets, and provides a live CLI packet monitor without launching 32 heavy video decoder processes:
   ```powershell
+  # IPv4 Scale (IGMPv2, 239.100.1.1..32):
   powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode Scale -Count 32
+
+  # IPv6 Scale (MLDv2, ff0e::100:1..32):
+  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -IPv6 -Mode Scale -Count 32
   ```
 
 * **Option 3: Scale GUI Multi-Channel Video Grid (Visual Proof):**
   Spawns $N$ video player windows (FFplay/VLC) tiled automatically into an optimal desktop grid layout (e.g. 2x2, 3x3, 4x4, or 8x4).
   - **Audio Muting Feature**: Channel 1 audio remains active, while Channels 2..$N$ are automatically muted (`-an` / `--no-audio`) to avoid overlapping audio noise:
   ```powershell
-  # Open 4 GUI channels in a 2x2 grid:
+  # Open 4 GUI channels in a 2x2 grid (IPv4):
   powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode ScaleGUI -Count 4
+
+  # Open 4 GUI channels in a 2x2 grid (IPv6):
+  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -IPv6 -Mode ScaleGUI -Count 4
 
   # Open 9 GUI channels in a 3x3 grid:
   powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode ScaleGUI -Count 9
@@ -368,7 +383,11 @@ The Windows automation suite provides four flexible operating options:
 * **Option 4: Rapid Channel Churn / Zapping Benchmark:**
   Rapidly zaps across channels 1..32 with configurable dwell times, measuring join-to-data reception for each channel:
   ```powershell
+  # IPv4 Churn:
   powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -Mode Churn -Count 32 -DelayMs 200 -Cycles 5
+
+  # IPv6 Churn:
+  powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 -IPv6 -Mode Churn -Count 32 -DelayMs 200 -Cycles 5
   ```
 
 #### Part 3: Inject 250 qps Query Stress from Server WAN
