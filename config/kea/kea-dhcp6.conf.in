@@ -64,9 +64,6 @@
         "output_options": [
           {
             "output": "stdout"
-          },
-          {
-            "output": "/var/log/kea-dhcp6.log"
           }
         ],
         "severity": "INFO",
@@ -77,9 +74,6 @@
         "output_options": [
           {
             "output": "stdout"
-          },
-          {
-            "output": "/var/log/kea-dhcp6.log"
           }
         ],
         "severity": "DEBUG",
