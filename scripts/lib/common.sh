@@ -915,19 +915,37 @@ wan_dhcp_server() {
                 fi
             fi
 
-            # If IPv4 is active (or if Kea was not used/failed for IPv6)
-            if (( is_v4 == 1 || use_kea == 0 )); then
-                require_cmd dnsmasq
-                touch "${leasefile_dnsmasq}"
-                chmod 0666 "${leasefile_dnsmasq}" 2>/dev/null || true
+            # Start IPv4 DHCP server
+            if (( is_v4 == 1 )); then
+                local kea4_started=0
+                if (( use_kea == 1 )) && command -v kea-dhcp4 >/dev/null 2>&1; then
+                    prepare_kea_runtime
+                    local kea4_tmpl="${PROJECT_ROOT}/config/kea/kea-dhcp4.conf.in"
+                    local kea4_conf="${STATE_DIR}/kea-dhcp4.conf"
+                    render_wan_template "${kea4_tmpl}" "${kea4_conf}" "eth0"
 
-                local active_pidfile="${pidfile_dnsmasq}"
-                local conf_target="${conffile_dnsmasq}"
-                if (( use_kea == 1 && is_v4 == 1 )); then
-                    # Kea handles IPv6, dnsmasq only handles IPv4
-                    active_pidfile="${pidfile_dnsmasq_v4}"
-                    conf_target="${STATE_DIR}/dnsmasq-wan-v4.conf"
-                    cat >"${conf_target}" <<EOF
+                    nohup ip netns exec "${WAN_NS}" \
+                        env KEA_PIDFILE_DIR="/run/kea" KEA_LOCKFILE_DIR="/run/lock/kea" \
+                        kea-dhcp4 -c "${kea4_conf}" > "${LOG_DIR}/kea-dhcp4.log" 2>&1 &
+                    printf '%s\n' "$!" > "${pidfile_kea4}"
+                    sleep 0.5
+
+                    if is_pidfile_running "${pidfile_kea4}"; then
+                        log_info "WAN DHCPv4 Server (kea-dhcp4) started in ${WAN_NS} [PID $(cat "${pidfile_kea4}")]"
+                        kea4_started=1
+                    else
+                        log_warn "kea-dhcp4 failed to start. Falling back to dnsmasq for IPv4..."
+                        stop_pidfile "${pidfile_kea4}"
+                    fi
+                fi
+
+                # If Kea4 wasn't used or failed, run dnsmasq for IPv4
+                if (( kea4_started == 0 )); then
+                    require_cmd dnsmasq
+                    touch "${leasefile_dnsmasq}"
+                    chmod 0666 "${leasefile_dnsmasq}" 2>/dev/null || true
+                    local conf_v4="${STATE_DIR}/dnsmasq-wan-v4.conf"
+                    cat >"${conf_v4}" <<EOF
 port=0
 no-resolv
 no-hosts
@@ -942,73 +960,68 @@ log-facility=${logfile_dnsmasq}
 log-dhcp
 EOF
                     if [[ -n "${DUT_WAN_MAC:-}" ]]; then
-                        printf 'dhcp-host=%s,%s\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" >>"${conf_target}"
+                        printf 'dhcp-host=%s,%s\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" >>"${conf_v4}"
                     fi
-                    ip netns exec "${WAN_NS}" dnsmasq --conf-file="${conf_target}" --pid-file="${active_pidfile}"
-                    log_info "WAN DHCPv4 Server (dnsmasq) started in ${WAN_NS} [PID $(cat "${active_pidfile}" 2>/dev/null || echo '?')]"
-                else
-                    # Standard dnsmasq mode (IPv4, IPv6, or Dual-Stack)
-                    if (( is_v6 == 1 )); then
-                        wait_for_ipv6_dad "${WAN_NS}" eth0 5
-                    fi
-                    {
-                        printf 'port=0\n'
-                        printf 'no-resolv\n'
-                        printf 'no-hosts\n'
-                        printf 'bind-interfaces\n'
-                        printf 'interface=eth0\n'
-                        if (( is_v4 == 1 )); then
-                            printf 'dhcp-range=%s,%s,255.255.255.0,%s\n' "${wan_v4_start}" "${wan_v4_end}" "${wan_v4_lease}"
-                            printf 'dhcp-option=option:router,%s\n' "${wan_v4_gw}"
-                            printf 'dhcp-option=option:dns-server,%s\n' "${wan_v4_dns}"
-                        fi
-                        if (( is_v6 == 1 )); then
-                            printf 'enable-ra\n'
-                            printf 'dhcp-range=%s,%s,slaac,ra-stateless,64,%s\n' "${wan_v6_start}" "${wan_v6_end}" "${wan_v4_lease}"
-                            printf 'dhcp-range=%s,%s,64,%s\n' "${wan_v6_start}" "${wan_v6_end}" "${wan_v4_lease}"
-                            printf 'dhcp-option=option6:dns-server,[%s]\n' "${wan_v6_dns}"
-                            if [[ -n "${AFTR_NAME:-}" ]]; then
-                                printf 'dhcp-option=option6:64,%s\n' "${AFTR_NAME}"
-                            fi
-                        fi
-                        printf 'dhcp-authoritative\n'
-                        printf 'dhcp-leasefile=%s\n' "${leasefile_dnsmasq}"
-                        printf 'log-facility=%s\n' "${logfile_dnsmasq}"
-                        printf 'log-dhcp\n'
-                    } > "${conf_target}"
-
-                    if [[ -n "${DUT_WAN_MAC:-}" ]]; then
-                        if (( is_v4 == 1 && is_v6 == 1 )); then
-                            printf 'dhcp-host=%s,%s,[%s]\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" "${DUT_WAN_IP6:-2001:db8:10::1}" >>"${conf_target}"
-                        elif (( is_v6 == 1 )); then
-                            printf 'dhcp-host=%s,[%s]\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP6:-2001:db8:10::1}" >>"${conf_target}"
-                        else
-                            printf 'dhcp-host=%s,%s\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP}" >>"${conf_target}"
-                        fi
-                    fi
-
-                    ip netns exec "${WAN_NS}" dnsmasq --conf-file="${conf_target}" --pid-file="${active_pidfile}"
-                    log_info "WAN DHCP Server (dnsmasq) started in ${WAN_NS} (mode: ${ip_version}) [PID $(cat "${active_pidfile}" 2>/dev/null || echo '?')]"
+                    ip netns exec "${WAN_NS}" dnsmasq --conf-file="${conf_v4}" --pid-file="${pidfile_dnsmasq_v4}"
+                    log_info "WAN DHCPv4 Server (dnsmasq fallback) started in ${WAN_NS} [PID $(cat "${pidfile_dnsmasq_v4}" 2>/dev/null || echo '?')]"
                 fi
+            fi
+
+            # Fallback for IPv6 if Kea was not used/failed
+            if (( is_v6 == 1 && use_kea == 0 )); then
+                require_cmd dnsmasq
+                wait_for_ipv6_dad "${WAN_NS}" eth0 5
+                touch "${leasefile_dnsmasq}"
+                chmod 0666 "${leasefile_dnsmasq}" 2>/dev/null || true
+                local conf_v6="${STATE_DIR}/dnsmasq-wan-v6.conf"
+                cat >"${conf_v6}" <<EOF
+port=0
+no-resolv
+no-hosts
+bind-interfaces
+interface=eth0
+enable-ra
+dhcp-range=${wan_v6_start},${wan_v6_end},slaac,ra-stateless,64,${wan_v4_lease}
+dhcp-range=${wan_v6_start},${wan_v6_end},64,${wan_v4_lease}
+dhcp-option=option6:dns-server,[${wan_v6_dns}]
+dhcp-authoritative
+dhcp-leasefile=${leasefile_dnsmasq}
+log-facility=${logfile_dnsmasq}
+log-dhcp
+EOF
+                if [[ -n "${AFTR_NAME:-}" ]]; then
+                    printf 'dhcp-option=option6:64,%s\n' "${AFTR_NAME}" >>"${conf_v6}"
+                fi
+                if [[ -n "${DUT_WAN_MAC:-}" ]]; then
+                    printf 'dhcp-host=%s,[%s]\n' "${DUT_WAN_MAC}" "${DUT_WAN_IP6:-2001:db8:10::1}" >>"${conf_v6}"
+                fi
+                ip netns exec "${WAN_NS}" dnsmasq --conf-file="${conf_v6}" --pid-file="${pidfile_dnsmasq}"
+                log_info "WAN DHCPv6 Server (dnsmasq fallback) started in ${WAN_NS} [PID $(cat "${pidfile_dnsmasq}" 2>/dev/null || echo '?')]"
             fi
             ;;
 
         stop)
+            stop_pidfile "${pidfile_kea4}"
             stop_pidfile "${pidfile_kea}"
             stop_pidfile "${pidfile_radvd}"
             stop_pidfile "${pidfile_dnsmasq_v4}"
             stop_pidfile "${pidfile_dnsmasq}"
             if ns_exists "${WAN_NS}"; then
+                ip netns exec "${WAN_NS}" pkill -TERM kea-dhcp4 2>/dev/null || true
                 ip netns exec "${WAN_NS}" pkill -TERM kea-dhcp6 2>/dev/null || true
                 ip netns exec "${WAN_NS}" pkill -TERM radvd 2>/dev/null || true
                 ip netns exec "${WAN_NS}" pkill -TERM dnsmasq 2>/dev/null || true
             fi
-            rm -f "${conffile_dnsmasq}" "${STATE_DIR}/dnsmasq-wan-v4.conf" "${STATE_DIR}/kea-dhcp6.conf" "${STATE_DIR}/radvd.conf" 2>/dev/null || true
+            rm -f "${conffile_dnsmasq}" "${STATE_DIR}"/dnsmasq-wan-*.conf "${STATE_DIR}"/kea-dhcp*.conf "${STATE_DIR}/radvd.conf" 2>/dev/null || true
             log_info "WAN DHCP Server stopped."
             ;;
 
         status)
             local running=0
+            if is_pidfile_running "${pidfile_kea4}"; then
+                printf 'WAN DHCPv4 Server (kea-dhcp4): RUNNING (PID %s in %s)\n' "$(cat "${pidfile_kea4}")" "${WAN_NS}"
+                running=1
+            fi
             if is_pidfile_running "${pidfile_kea}"; then
                 printf 'WAN DHCPv6 Server (kea-dhcp6): RUNNING (PID %s in %s, IA_NA + IA_PD)\n' "$(cat "${pidfile_kea}")" "${WAN_NS}"
                 running=1
