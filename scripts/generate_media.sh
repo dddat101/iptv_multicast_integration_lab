@@ -284,6 +284,7 @@ render_channel_video() {
     local aud_input_args=("$@")
 
     local mcast_ip="${MCAST_BASE}${ch}:${MCAST_PORT:-5000}"
+    local mcast_display="${mcast_ip//:/\\:}"
     local theme
     theme="$(get_channel_theme "${ch}")"
     local c0="${theme%%:*}"
@@ -339,7 +340,7 @@ drawbox=x='(iw-${box_w})/2 + 10 + mod(t*220, ${box_w}-80)':y='(ih)/2+14':w=${sca
 drawtext=text='● LIVE':fontsize=$(( fs_badge * 8 / 10 )):fontcolor=red:x='(w-${box_w})/2+14':y='(h-${box_h})/2+12':enable='mod(floor(t*2),2)',\
 drawtext=text='STATUS\: ACTIVE':fontsize=$(( fs_badge * 75 / 100 )):fontcolor=lime:x='(w+${box_w})/2-text_w-14':y='(h-${box_h})/2+12',\
 drawtext=text='CHANNEL ${ch_num_padded}':fontsize=${fs_ch}:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2-$(( box_h / 7 )),\
-drawtext=text='${mcast_ip}':fontsize=${fs_ip}:fontcolor=cyan:x=(w-text_w)/2:y=(h-text_h)/2+$(( box_h / 4 )),\
+drawtext=text='${mcast_display}':fontsize=${fs_ip}:fontcolor=cyan:x=(w-text_w)/2:y=(h-text_h)/2+$(( box_h / 4 )),\
 drawbox=x=0:y=ih-${bottom_h}:w=iw:h=${bottom_h}:color=black@0.75:t=fill,\
 drawtext=text='PTS\: %{pts\:hms}':fontsize=${fs_bar}:fontcolor=white:x=15:y=h-$(( bottom_h * 3 / 4 )),\
 drawtext=text='FRAME\: %{n}':fontsize=${fs_bar}:fontcolor=lime:x=w-text_w-15:y=h-$(( bottom_h * 3 / 4 )),\
