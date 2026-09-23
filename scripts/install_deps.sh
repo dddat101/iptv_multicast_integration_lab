@@ -20,6 +20,14 @@ readonly REQUIRED_PACKAGES=(
     tshark
     udhcpc
     vlc
+    iperf3
+    iproute2
+    iptables
+    isc-dhcp-client
+    kea-dhcp4-server
+    kea-dhcp6-server
+    openssh-client
+    radvd
 )
 
 usage() {
