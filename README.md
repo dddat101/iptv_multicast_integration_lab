@@ -1,91 +1,68 @@
 # Real IPTV Multicast Integration Lab
 
-A production-grade, reproducible multicast test environment designed to validate **real-world IPTV streaming** through physical routers (DUT) or self-contained virtual simulations.
+[![Topology: Physical & Virtual](https://img.shields.io/badge/Topology-Physical%20%7C%20Virtual-blue.svg)](#deployment-modes-matrix)
+[![Protocol: Dual-Stack](https://img.shields.io/badge/Protocol-IPv4%20(IGMPv2)%20%2B%20IPv6%20(MLDv2)-green.svg)](#core-capabilities)
+[![WAN Stack: Kea Triad](https://img.shields.io/badge/WAN%20Stack-Kea%20(DHCP4%2FDHCP6)%20%2B%20radvd-orange.svg)](#upstream-wan-carrier-stack)
+[![Standards: RFC 4541 & RFC 4605](https://img.shields.io/badge/Standards-RFC%204541%20%7C%20RFC%204605-purple.svg)](#multicast-benchmark--rfc-verification-suite)
+[![Zero Docker](https://img.shields.io/badge/Engine-Native%20Linux%20Netns-red.svg)](#core-capabilities)
 
-Unlike synthetic socket tests, this lab uses **real application/protocol stacks**:
-* **Media Server**: **FFmpeg** streaming 1080p MPEG-TS over UDP Multicast (`239.10.10.10:5000`).
-* **STB Clients**: **VLC (cvlc)** clients invoking native kernel `IP_ADD_MEMBERSHIP` socket options to generate standard IGMPv2 Report signaling.
-* **Network Flexibility**: Native Linux Network Namespaces (`ip netns`), L2 test bridges, or direct standalone host streaming without topology bridges. Zero Docker dependency.
-
----
-
-## Deployment Modes Matrix
-
-| Mode | Command | Bridges | Namespaces | Physical NICs | Typical Use Case |
-|---|---|---|---|---|---|
-| **Standalone WAN Server** *(Zero Topology)* | `sudo ./scripts/start_server.sh -i <iface> start`<br>*(or `start_wan_server.sh`)* | None | None | `WAN_IF` or `eno1` | Linux PC acts as IPTV headend directly on Router WAN port or lab network (`eno1`); clients test on Router LAN/Wi-Fi |
-| **WAN-Only Namespace** | `sudo ./scripts/setup.sh --wan-only` | `br-test-wan` | `ns-server`, `ns-wan` | `WAN_IF` only | Isolated IPTV headend with network namespace & WAN DHCP |
-| **Physical Server-Only** | `sudo ./scripts/setup.sh -p -s` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-wan` | `WAN_IF` & `LAN_IF` | Router in the middle; external physical/Windows client on LAN bridge |
-| **Full Physical DUT** | `sudo ./scripts/setup.sh --physical` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-stb1,2`, `ns-wan` | `WAN_IF` & `LAN_IF` | Full automated physical qualification test with internal STB namespaces |
-| **Virtual Simulation** | `sudo ./scripts/setup.sh --virtual` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-dut`, `ns-stb1,2` | None | Local development, debugging, and headless CI pipelines |
+A production-grade, reproducible network testbed and automated qualification suite for validating **real-world IPTV multicast streaming** through physical CPE router gateways (DUT) or self-contained virtual simulations.
 
 ---
 
-## Architecture Topologies
+## Core Capabilities
 
-### Topology 1: Full End-to-End Qualification Lab (Physical / Virtual)
+* **Real Application & Protocol Stacks**:
+  * **Media Server**: High-rate **FFmpeg** broadcasting 1080p MPEG-TS streams over UDP Multicast (`239.10.10.10:5000` / `[ff0e::10:10:10]:5000` / `[ff15::10:10]:5000`).
+  * **STB Clients**: **VLC (cvlc)** and native .NET/Python socket clients generating real IGMPv2 / MLDv2 Join/Leave signaling via kernel `IP_ADD_MEMBERSHIP` / `IPV6_ADD_MEMBERSHIP`.
+* **Upstream WAN Carrier Stack (The Kea Triad Standard)**:
+  * [`kea-dhcp4`](config/kea/kea-dhcp4.conf.in): Carrier-grade DHCPv4 server managing pools, gateway, subnet, and DNS.
+  * [`kea-dhcp6`](config/kea/kea-dhcp6.conf.in): Carrier-grade DHCPv6 server supporting **IA_NA** (WAN IPv6 address) and **IA_PD** (Prefix Delegation pools `/56` $\to$ `/60` per RFC 3633 / RFC 8415) for delegating prefixes to router DUTs, Rapid Commit, and DS-Lite AFTR (Option 64).
+  * [`radvd`](config/radvd/radvd.conf.in): Autonomous Router Advertisement daemon with granular RFC 4861 / RFC 8106 flags (`AdvManagedFlag on`, `AdvOtherConfigFlag on`, `AdvAutonomous on/off`, RDNSS).
+  * **Automated Fallback**: Automatically falls back to `dnsmasq` if Kea is not installed, guaranteeing zero-friction operation.
+* **Dual-Stack Protocol Fidelity**: Concurrent testing of IPv4 IGMPv2 (`239.10.10.10:5000`) and IPv6 MLDv2 (`[ff0e::10:10:10]:5000` or `[ff15::10:10]:5000`).
+* **Multi-Device Physical Testbed & Standalone Mode**: Test real hardware routers via physical NICs (`WAN_IF`, `LAN_IF`), or stream directly out of any host interface (e.g. `eno1`) without virtual bridges or namespaces.
+* **Windows Client Automation Suite ([`run_client.ps1`](scripts/windows/run_client.ps1))**: One-click Windows Defender Firewall setup, static route injection, single-channel GUI playback, ultra-low RAM 32-channel scale monitor (<15MB RAM), and rapid channel churn benchmarking.
+* **Dual-Layer PCAP Compliance Engine ([`verify_compliance.sh`](scripts/verify_compliance.sh))**: Wire-level PCAP validation with ASCII packet timeline, join-to-data latency, ToS/DSCP (`AF41`), and Don't Fragment (`DF=1`) verification.
+
+---
+
+## Architecture & Topologies
+
+### Full End-to-End Dual-Stack Testbed (Physical / Virtual)
 
 ```mermaid
 flowchart TD
-    subgraph WAN_Side["Upstream WAN Side (10.10.0.0/24)"]
-        SRV["ns-server (Netns)\nFFmpeg MPEG-TS Streamer\n10.10.0.2/24"]
-        CTL["ns-wan (Control Netns)\nWAN DHCP Server (dnsmasq)\n10.10.0.254/24"]
+    subgraph WAN_Side["Upstream WAN Side (10.10.0.0/24 & 2001:db8:10::/64)"]
+        SRV["ns-server (Media Server)\nFFmpeg MPEG-TS Streamer\nIPv4: 10.10.0.2 / IPv6: 2001:db8:10::2"]
+        CTL["ns-wan (Control Namespace)\nKea Triad: kea-dhcp4 + kea-dhcp6 + radvd\n(IA_NA + IA_PD /56 -> /60 Delegation)"]
         BR_WAN["br-test-wan (L2 Bridge)\nmcast_snooping=0"]
         SRV --- BR_WAN
         CTL --- BR_WAN
     end
 
-    subgraph DUT["Device Under Test (DUT / Router)"]
-        DUT_WAN["DUT WAN Port\n10.10.0.1/24 (DHCP/Static)\nFirewall & IGMP Proxy"]
-        DUT_CORE["Multicast Forwarding Engine\nigmpproxy / kernel mroute\nHardware Flow Acceleration"]
-        DUT_LAN["DUT LAN Switch / Bridge\n10.20.0.1/24\nIGMP Snooping Enabled"]
+    subgraph DUT["Device Under Test (Router / CPE Gateway)"]
+        DUT_WAN["DUT WAN Interface\nGets WAN IP + IA_PD Prefix\nFirewall & IGMP/MLD Proxy"]
+        DUT_CORE["Multicast Forwarding Engine\nHardware PPE / Switch Fabric Bypass\nigmpproxy / mcproxy / kernel mroute"]
+        DUT_LAN["DUT LAN Switch / Bridge\nCarves /64 Subnets to LAN\nIGMP & MLD Snooping Enabled"]
         DUT_WAN --- DUT_CORE --- DUT_LAN
     end
 
-    subgraph LAN_Side["Downstream LAN Side (10.20.0.0/24)"]
+    subgraph LAN_Side["Downstream LAN Side (192.168.1.0/24 & Delegated IPv6 Prefix)"]
         BR_LAN["br-test-lan (L2 Bridge)\nmcast_snooping=0"]
-        C1["ns-stb1 (Netns)\nVLC STB: stb-living-room\n10.20.0.11/24"]
-        C2["ns-stb2 (Netns)\nVLC STB: stb-bedroom\n10.20.0.12/24"]
+        C1["ns-stb1 (Netns)\nVLC STB: stb-01\nDual-Stack (DHCP/SLAAC)"]
+        C2["ns-stb2 (Netns)\nVLC STB: stb-02\nDual-Stack (DHCP/SLAAC)"]
+        WIN["External Windows 11 PC\n(run_client.ps1 GUI / Scale)"]
         BR_LAN --- C1
         BR_LAN --- C2
+        BR_LAN -.- WIN
     end
 
-    BR_WAN ===|"USB-WAN (enxd46e...)"| DUT_WAN
-    DUT_LAN ===|"USB-LAN (enx00e...)"| BR_LAN
+    BR_WAN ===|"Physical WAN (enxd46e...)"| DUT_WAN
+    DUT_LAN ===|"Physical LAN (enx00e...)"| BR_LAN
 ```
 
-### Topology 2: Standalone Zero-Topology WAN Server (Direct Host Headend)
-
-```mermaid
-flowchart LR
-    subgraph Host_Linux["Linux PC (IPTV Headend)"]
-        WAN_NIC["Physical Interface WAN_IF\n(e.g., enxd46e0e0c65e1)\nIP: 10.10.0.2/24"]
-        DHCP["Direct DHCP Server (dnsmasq)\nInterface: WAN_IF, Port: 0 (No DNS conflict)\nLeases: 10.10.0.1 - 10.10.0.50"]
-        FFMPEG["FFmpeg Streamer\nlocaladdr=10.10.0.2\n239.10.10.10:5000"]
-        DHCP -.-> WAN_NIC
-        FFMPEG ==>|"UDP Multicast"| WAN_NIC
-    end
-
-    subgraph Router["DUT (Router / Gateway)"]
-        R_WAN["WAN Port\nGets 10.10.0.x via DHCP\nIGMP Proxy (Upstream)"]
-        R_FWD["Multicast Routing\nigmpproxy / snooping"]
-        R_LAN["LAN Ports & Wi-Fi\n192.168.1.1/24\nIGMP Snooping"]
-        R_WAN --- R_FWD --- R_LAN
-    end
-
-    subgraph Clients["Client Devices (Downstream)"]
-        WIN["Windows PC (VLC / FFplay)\n192.168.1.150"]
-        STB["Physical IPTV STB / Smart TV"]
-    end
-
-    WAN_NIC ===|"Ethernet Cable"| R_WAN
-    R_LAN ===|"Ethernet / Wi-Fi"| WIN
-    R_LAN ===|"Ethernet"| STB
-```
-
----
-
-## Packet Flow & Protocol Sequence
+### Packet Flow & Protocol Sequence
 
 ```mermaid
 sequenceDiagram
@@ -93,405 +70,164 @@ sequenceDiagram
     actor Tester as Test Runner / CI
     participant Server as Media Server (FFmpeg)
     participant DUT as DUT Gateway (Router)
-    participant Client1 as VLC Client 1 (STB 1)
-    participant Client2 as VLC Client 2 (STB 2)
+    participant Client1 as Client 1 (STB 1)
+    participant Client2 as Client 2 (STB 2)
 
-    Note over Server,DUT: Phase 1: Continuous Multicast Stream
-    Server->>DUT: UDP MPEG-TS Stream (239.10.10.10:5000, 1316B, TTL 16)
+    Note over Server,DUT: Phase 1: Continuous Multicast Stream (IPv4: 239.10.10.10 / IPv6: [ff0e::10:10:10])
+    Server->>DUT: UDP MPEG-TS Stream (Port 5000, 1316B, TTL 16)
     Note over DUT: DUT drops stream (no downstream LAN members yet)
 
     Note over Client1,DUT: Phase 2: First Client Joins (STB 1)
-    Client1->>DUT: IGMPv2 Membership Report (239.10.10.10)
-    Note over DUT: IGMP Snooping adds Client1 port to MDB
-    DUT->>Server: Upstream IGMP Report (WAN Proxy)
-    DUT->>Client1: Forwarded MPEG-TS Video Stream
-    Note over Client1: VLC receives TS frames & starts decoding
+    Client1->>DUT: IGMPv2 / MLDv2 Membership Report
+    Note over DUT: Snooping maps Client1 port; Proxy proxies Join to WAN
+    DUT->>Server: Upstream Report (Source IP NATed to WAN IP)
+    DUT->>Client1: Forwarded MPEG-TS Video Stream (Hardware Bypass)
 
-    Note over Client2,DUT: Phase 3: Second Client Joins (STB 2)
-    Client2->>DUT: IGMPv2 Membership Report (239.10.10.10)
-    Note over DUT: DUT duplicates stream to Client2 port
+    Note over Client2,DUT: Phase 3: Second Client Joins Same Stream (STB 2)
+    Client2->>DUT: IGMPv2 / MLDv2 Membership Report
+    Note over DUT: Hardware fabric duplicates stream to Client2 port (Upstream Join suppressed)
     DUT->>Client1: Forwarded MPEG-TS Stream
     DUT->>Client2: Forwarded MPEG-TS Stream
 
     Note over Client1,DUT: Phase 4: Client 1 Leaves (Zapping)
-    Client1->>DUT: IGMPv2 Leave Group (224.0.0.2)
-    DUT->>Client1: Stop stream to Client 1
-    DUT->>Client2: Stream continues uninterrupted to Client 2
+    Client1->>DUT: IGMPv2 Leave / MLDv2 Done
+    DUT->>Client1: Stops stream to Client 1
+    DUT->>Client2: Stream continues uninterrupted to Client 2 (Fast Leave Isolation)
 
     Note over Client2,DUT: Phase 5: Client 2 Leaves
-    Client2->>DUT: IGMPv2 Leave Group (224.0.0.2)
-    DUT->>Server: Stop forwarding (Flow deleted)
+    Client2->>DUT: IGMPv2 Leave / MLDv2 Done
+    DUT->>Server: Upstream Leave (Forwarding terminated)
 ```
 
 ---
 
-## Directory & Script Structure
+## Deployment Modes Matrix
 
-```text
-iptv_multicast_integration_lab/
-├── config.env.example        # Reference configuration template
-├── config.env                # Local host-specific configuration
-├── config/
-│   └── pimd.conf             # PIM-SM/SSM daemon configuration template
-├── captures/                 # Timestamped PCAP evidence files (*.pcap)
-├── logs/                     # Daemon logs (server.log, client_*.log, dnsmasq-*.log)
-├── media/                    # MPEG-TS video assets (sample_1080p_8mbps.ts)
-├── state/                    # Runtime state (PIDs, leases, topology_state.env)
-├── docs/
-│   ├── MANUAL_TEST_GUIDE.md  # Comprehensive step-by-step physical testbed manual verification guide (7 TCs)
-│   ├── SHELL_STYLE.md        # Strict mode & safety guidelines
-│   ├── TEST_PLAN.md          # Test plan & compliance matrix
-│   └── TROUBLESHOOTING.md    # Hardware, network & Linux diagnostic runbook
-├── tools/                    # Standalone Python 3 Multicast & IGMP tools
-│   ├── igmp_client.py        # High-performance multi-group join/leave/churn client
-│   ├── igmp_query.py         # Raw AF_PACKET IGMP query injector (General & Specific)
-│   ├── mcast_sender.py       # High-precision UDP multicast transmitter with sequence tagging
-│   └── mcast_receiver.py     # UDP multicast receiver with sequence & loss analysis
-└── scripts/
-    ├── lib/
-    │   ├── common.sh         # Core framework library (logging, netns, safety)
-    │   └── udhcpc.script     # BusyBox udhcpc event script for namespace LAN DHCP
-    ├── install_deps.sh       # One-touch host dependency installer (apt-based)
-    ├── client_dhcp.sh        # LAN DHCP client manager for STB namespaces (request | daemon | status | release)
-    ├── start_wan_server.sh   # Standalone WAN IPTV server (Zero Topology, host-direct)
-    ├── start_server.sh       # Streamer manager (--direct host mode or --netns mode)
-    ├── setup.sh              # Topology setup (--physical, --single, --virtual, --wan-only, --server-only)
-    ├── cleanup.sh            # Idempotent cleanup of namespaces, veths, bridges, direct daemons
-    ├── show_state.sh         # Displays runtime state, bridges, namespaces, groups, DHCP leases
-    ├── capture.sh            # Packet capture manager (start | stop | status | clean)
-    ├── generate_media.sh     # Generates deterministic 1080p 8Mbps MPEG-TS sample
-    ├── diagnose.sh           # Non-destructive pre-flight check of host, NICs, tools
-    ├── start_client.sh       # VLC STB client manager (run | start | stop | status)
-    ├── scenario.sh           # Multi-phase automated smoke scenario (all | discovery | traffic | leave | verify)
-    ├── test_client_quality.sh   # Multi-client concurrent throughput, jitter, and zero packet loss benchmark
-    ├── test_client_stability.sh # Multi-client RFC 4541 Fast Leave isolation and zapping soak benchmark
-    ├── verify_compliance.sh  # Dual-layer verification engine with ASCII evidence timeline
-    ├── verify_capture.sh     # Automated PCAP verification & latency analysis
-    ├── view_stream_gui.sh    # Desktop GUI player (VLC/FFplay) on Ubuntu host with auto routing
-    ├── benchmark_suite.sh    # Comprehensive benchmark suite (quality, stability, scale, churn, stress, loss)
-    └── dut_collector.sh      # Remote router state and multicast diagnostics collector
-```
-
----
-
-## Prerequisites
-
-Install host dependencies with one command:
-
-```bash
-sudo ./scripts/install_deps.sh
-```
-
-Or manually install packages via `apt`:
-```bash
-sudo apt update
-sudo apt install -y iproute2 ethtool tshark tcpdump ffmpeg vlc udhcpc dnsmasq python3 util-linux usbutils
-```
+| Mode | Command | Bridges | Namespaces | Physical NICs | Typical Use Case |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Standalone Direct Server** *(Zero Topology)* | `sudo ./scripts/start_server.sh -i <iface> -6 start`<br>*(or `--dual`)* | None | None | `eno1` or `WAN_IF` | Linux PC acts directly as IPTV Headend on physical port without bridges or netns. |
+| **WAN-Only Testbed** | `sudo ./scripts/setup.sh -s -w --dual` | `br-test-wan` | `ns-server`, `ns-wan` | `WAN_IF` only | Full Upstream WAN environment (Kea Triad + Media Server) connected to router WAN; clients connect to router LAN/Wi-Fi. |
+| **Physical Server-Only** | `sudo ./scripts/setup.sh -p -s --dual` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-wan` | `WAN_IF` & `LAN_IF` | Router in middle; external physical PCs or Windows clients connected to LAN bridge. |
+| **Full Physical DUT** | `sudo ./scripts/setup.sh -p --dual --clients 5` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-wan`, `ns-stb1..5` | `WAN_IF` & `LAN_IF` | Automated qualification with internal STB client namespaces emulating realistic subscribers. |
+| **Virtual Simulation** | `sudo ./scripts/setup.sh --virtual --dual` | `br-test-wan`, `br-test-lan` | `ns-server`, `ns-dut`, `ns-stb1..2` | None | Headless CI/CD pipelines, protocol development, and offline debugging. |
 
 ---
 
 ## Quick Start Guide
 
-### Step 1: Configure Environment
+### Step 1: Install Dependencies & Pre-flight Diagnostics
 
-Copy configuration and specify your physical Ethernet adapter(s):
+```bash
+# 1. Install system packages (iproute2, ffmpeg, vlc, tshark, kea, radvd, dnsmasq):
+sudo ./scripts/install_deps.sh
+
+# 2. Run non-destructive pre-flight environment check:
+./scripts/diagnose.sh
+```
+
+### Step 2: Configure Environment (`config.env`)
 
 ```bash
 cp config.env.example config.env
 nano config.env
 ```
-
-Set:
+Key settings:
 ```bash
-WAN_IF="enxd46e0e0c65e1"   # Connected to DUT WAN port
-LAN_IF="enx00e04c88293c"   # Connected to DUT LAN port (only needed if using LAN bridge)
+WAN_IF="enxd46e0e0c65e1"      # Connected to DUT Router WAN port
+LAN_IF="enx00e04c88293c"      # Connected to DUT Router LAN port (for dual-bridge modes)
+IP_VERSION="dual"             # "4" (IPv4), "6" (IPv6), or "dual" (Concurrent Dual-Stack)
+WAN_DHCP_BACKEND="kea"         # 'kea' (Kea Triad: kea-dhcp4 + kea-dhcp6 + radvd) or 'dnsmasq'
 ```
 
----
-
-### Step 2: Generate Media Asset
+### Step 3: Generate Video Asset
 
 ```bash
+# Generate standard 1080p 8Mbps MPEG-TS sample:
 ./scripts/generate_media.sh
+
+# (Optional) Generate 32 distinct animated channels for scale testing:
+./scripts/generate_media.sh -n 32 --preset-low -d 120
 ```
 
----
+### Step 4: Launch Testbed Topology
 
-### Step 3: Choose Your Running Mode
-
-#### Mode 1: Standalone WAN IPTV Server (Zero Topology - Recommended for Router WAN Testing)
-Use this when you want to stream IPTV directly out of a specific physical interface without creating virtual bridges or network namespaces:
+Choose your desired operational mode:
 
 ```bash
-# 1. Stream out a specific interface (e.g. eno1 on corporate/lab network, or enxd46e0e0c65e1):
-sudo ./scripts/start_server.sh -i eno1 start
-./scripts/start_server.sh status
-sudo ./scripts/start_server.sh stop
-
-# 2. Interactive foreground streaming (live FFmpeg bitrate/fps display):
-sudo ./scripts/start_server.sh -i eno1 run
-
-# 3. Stream with custom multicast group and port:
-sudo ./scripts/start_server.sh -i eno1 -g 239.100.1.1 -p 5000 start
-
-# 4. Standard dedicated WAN adapter mode (from config.env WAN_IF):
-sudo ./scripts/start_server.sh --direct start
-# Or via alias: sudo ./scripts/start_wan_server.sh start
-```
-
-* **Smart Interface Handling**:
-  - **Shared Host Interface (e.g. `eno1`)**: When pointing to an interface carrying existing IPs or default routes, the script **preserves IP configuration**, avoids flushing, disables conflicting DHCP listeners, sets `224.0.0.0/4` multicast routing to the interface, and cleanly restores state on stop.
-  - **Dedicated Test Interface (e.g. `enxd46e0e0c65e1`)**: Automatically unmanages from NetworkManager, assigns `10.10.0.2/24`, and launches an isolated WAN DHCP server (`dnsmasq`) for the router's WAN port.
-* **Automatic MTU Adaptation**: If the interface MTU is $< 1344$ (e.g. MTU 1280), the script automatically adjusts the MPEG-TS payload size from 1316 bytes (7 TS packets) to 1128 bytes (6 TS packets) to eliminate IP fragmentation packet loss.
-
-#### Mode 2: WAN-Only Namespace Topology Mode
-Use this if you prefer network namespace isolation for the media server, but only have `WAN_IF` connected (no `LAN_IF` or LAN bridge):
-
-```bash
-sudo ./scripts/setup.sh --wan-only
-# Short syntax: sudo ./scripts/setup.sh -w
-```
-Deploys `br-test-wan`, `WAN_NS` (DHCP), and `ns-server` namespace on `WAN_IF`, skipping all LAN bridges and client namespaces.
-
-#### Mode 3: Server-Only Physical Topology Mode
-```bash
-sudo ./scripts/setup.sh --physical --server-only
-# Short syntax: sudo ./scripts/setup.sh -p -s
-```
-Deploys both `br-test-wan` and `br-test-lan` and starts streaming, but skips client namespaces so you can connect external test devices to `LAN_IF`.
-
-#### Mode 4: Full Physical DUT Mode (Automated End-to-End)
-```bash
-# Dynamic DHCP Mode: Emulate 5 STB clients obtaining IPs from DUT LAN DHCP
-sudo ./scripts/setup.sh --physical --dhcp --clients 5
-
-# Scale up to 10 or 20 clients:
-sudo ./scripts/setup.sh --physical --clients 10
-
-# Static Mode: Clients use deterministic static IPs
-sudo ./scripts/setup.sh --physical --static --clients 5
-```
-Deploys both bridges, starts media server streaming in `ns-server`, and launches $N$ internal STB client namespaces (`ns-stb1` .. `ns-stbN`). Each client is assigned a unique locally administered MAC address (`02:54:00:20:00:XX`) to guarantee distinct DHCP leases without exhausting pool capacity. When running in DHCP mode, clients automatically send DHCP Discover requests with:
-* **Option 12 (Host Name)**: `stb-01`, `stb-02`, ..., `stb-N`
-* **Option 60 (Vendor Class Identifier)**: `IPTV_STB`
-
-#### Mode 5: Virtual Simulation Mode (No Hardware Required)
-```bash
-sudo ./scripts/setup.sh --virtual
-```
-
-#### Mode 6: IP Protocol Selection (IPv4 / IGMP vs IPv6 / MLD vs Dual-Stack)
-The testbed natively supports IPv4 (IGMPv2), IPv6 (MLDv2), and concurrent Dual-Stack (IPv4 + IPv6) multicast topologies across all running modes:
-
-```bash
-# 1. IPv4 Mode (Default):
-sudo ./scripts/setup.sh -s -w -4
-# Or full physical DUT with 5 STB clients:
-sudo ./scripts/setup.sh --physical -4 --clients 5
-
-# 2. IPv6 Mode (MLDv2 & ff0e::10:10:10):
-sudo ./scripts/setup.sh -s -w -6
-# Or full physical DUT with 5 STB clients:
-sudo ./scripts/setup.sh --physical -6 --clients 5
-
-# 3. Dual-Stack Mode (Concurrent IPv4 + IPv6):
+# Option A: Full WAN Testbed (Dual-Stack: Kea Triad + Background Streaming):
 sudo ./scripts/setup.sh -s -w --dual
-# Short aliases: -ds, --dual-stack, -2
-# Or full physical DUT with 5 STB clients:
-sudo ./scripts/setup.sh --physical --dual --clients 5
 
-# Virtual simulation in Dual-Stack mode:
+# Option B: Direct Physical Interface Streaming (Zero Topology):
+sudo ./scripts/start_server.sh -i enx6c1ff76608e2 -6 start
+
+# Option C: Full Physical Testbed with 5 Emulated STB Clients:
+sudo ./scripts/setup.sh -p --dual --clients 5
+
+# Option D: Virtual Simulation (No physical hardware required):
 sudo ./scripts/setup.sh --virtual --dual
 ```
 
-* **IPv4 Mode (`-4`, default)**: Assigns IPv4 subnets (`10.10.0.0/24` WAN, `10.20.0.0/24` LAN), streams to `239.10.10.10:5000`, enforces IGMPv2, and runs IPv4 DHCP (`dnsmasq`).
-* **IPv6 Mode (`-6`)**: Assigns IPv6 ULA subnets (`fd00:10:10::/64` WAN, `fd00:10:20::/64` LAN), streams to `[ff0e::10:10:10]:5000`, enforces MLDv2 (`force_mld_version=2`), enables IPv6 forwarding, and provides SLAAC/DHCPv6 (`dnsmasq`).
-* **Dual-Stack Mode (`--dual`, `--dual-stack`, `-ds`, `-2`)**: Configures concurrent IPv4 and IPv6 addressing across all namespaces, runs dual DHCPv4 + SLAAC/DHCPv6 server, launches concurrent dual multicast streaming (`239.10.10.10:5000` + `[ff0e::10:10:10]:5000`), and provisions dual STB client listeners.
-
-Verify state anytime with:
+Inspect active runtime daemons, bridge ports, and IP leases anytime:
 ```bash
 ./scripts/show_state.sh
 ```
 
-##### Dual-Stack Streaming & Client Operations:
-```bash
-# Start dual-stack media streaming (both IPv4 and IPv6 streams):
-sudo ./scripts/start_server.sh --dual start
-./scripts/start_server.sh status
-sudo ./scripts/start_server.sh stop
+### Step 5: Start Client Playback & Stream Reception
 
-# Start STB clients to receive both IPv4 and IPv6 multicast streams:
-sudo ./scripts/start_client.sh --dual all start
-./scripts/start_client.sh status all
-sudo ./scripts/start_client.sh stop all
+#### External Windows Client ([`scripts/windows/run_client.ps1`](scripts/windows/run_client.ps1))
+```powershell
+# 1. One-click Setup (Opens Firewall UDP 5000 & Adds Multicast Routes):
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 Setup
+
+# 2. Watch Channel 1 (IPv6) via FFplay / VLC:
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 Play 1 -IPv6
+
+# 3. 32-Channel Scale & Bitrate Monitor (<15MB RAM):
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 Scale -Count 32 -IPv6
+
+# 4. Stop all playback:
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\run_client.ps1 Stop
 ```
 
----
-
-### Step 4: LAN Client DHCP Management (`client_dhcp.sh`)
-
-You can inspect, request, or renew DHCP leases for namespace STB clients at any time:
-
+#### Linux Client ([`scripts/start_client.sh`](scripts/start_client.sh))
 ```bash
-# Check current lease status, IP (IPv4 & IPv6), gateway, and MAC for all clients:
-./scripts/client_dhcp.sh status all
+# Run Client 1 interactively in foreground:
+sudo ./scripts/start_client.sh --dual 1 run
 
-# Request a one-shot IPv4 DHCP lease for client 1 or all clients:
-sudo ./scripts/client_dhcp.sh request all
-# Or explicitly: sudo ./scripts/client_dhcp.sh request-v4 all
+# Start Client 1 as background daemon:
+sudo ./scripts/start_client.sh --dual 1 start
 
-# Request an IPv6 lease (SLAAC Router Solicitation / DHCPv6) for all clients:
-sudo ./scripts/client_dhcp.sh request-v6 all
-
-# Request both IPv4 and IPv6 leases concurrently (Dual-Stack):
-sudo ./scripts/client_dhcp.sh dual all
-
-# Start background udhcpc daemons to continuously maintain/renew IPv4 leases:
-sudo ./scripts/client_dhcp.sh daemon all
-
-# Release leases and flush IP addresses (IPv4 & IPv6):
-sudo ./scripts/client_dhcp.sh release all
+# Check client reception & membership:
+./scripts/start_client.sh all status
 ```
 
----
-
-### Step 5: Testing with External Windows Client (VLC / FFplay)
-
-When testing IPTV playback on a separate Windows PC connected to the router's LAN port:
-
-> [!TIP]
-> **Windows Automation Script Available**:
-> You can simply run [`scripts/windows/run_client.bat`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/windows/run_client.bat) or [`scripts/windows/run_client.ps1`](file:///home/dddat/workspace/iptv_multicast_integration_lab/scripts/windows/run_client.ps1) on Windows to automate Firewall & route configuration, single-channel playback, 32-group scale tests, and rapid channel churn. See [`docs/MANUAL_TEST_GUIDE.md`](file:///home/dddat/workspace/iptv_multicast_integration_lab/docs/MANUAL_TEST_GUIDE.md) for detailed test procedures.
-
-1. **Start the IPTV Server on Linux**:
-   ```bash
-   sudo ./scripts/start_wan_server.sh start
-   ```
-2. **Connect Windows PC**:
-   - Plug an Ethernet cable from the Windows PC into a LAN port on the Router (DUT).
-   - Ensure Windows receives an IP in the router's LAN subnet (e.g. `192.168.1.150`).
-3. **Configure Windows Defender Firewall (Required)**:
-   Open **PowerShell as Administrator** on Windows and allow inbound UDP port 5000:
-   ```powershell
-   New-NetFirewallRule -DisplayName "IPTV Multicast Port 5000" -Direction Inbound -LocalPort 5000 -Protocol UDP -Action Allow
-   ```
-4. **Select Network Interface (Avoid Wi-Fi vs Ethernet Routing Conflicts)**:
-   When Windows has both Wi-Fi and Ethernet active, Windows may route multicast/IGMP requests over Wi-Fi instead of the Ethernet adapter connected to the router. Use any of the following methods:
-
-   * **Method A: Windows Multicast Route (Recommended - Universal for all apps)**:
-     Open **Command Prompt as Administrator** on Windows:
-     ```cmd
-     route add 224.0.0.0 mask 240.0.0.0 192.168.1.150 metric 1
-     ```
-     *(This ensures all applications—VLC, FFplay, and browser players—send IGMP Joins and receive video via Ethernet. To remove later: `route delete 224.0.0.0`).*
-
-     Then in VLC, simply open:
-     ```text
-     udp://@239.10.10.10:5000
-     ```
-
-   * **Method B: VLC Command-Line Flag (`--mcast-intf`)**:
-     Open PowerShell or CMD on Windows:
-     ```powershell
-     & "C:\Program Files\VideoLAN\VLC\vlc.exe" udp://@239.10.10.10:5000 --mcast-intf 192.168.1.150
-     ```
-
-   * **Method C: VLC GUI Preferences**:
-     1. In VLC, go to **Tools** -> **Preferences** (`Ctrl + P`).
-     2. In the bottom-left corner, select **All** under **Show settings**.
-     3. Navigate to **Input / Codecs** -> **Access modules** -> **UDP**.
-     4. In **Multicast output interface**, enter: `192.168.1.150`.
-     5. Click **Save** and restart VLC.
-     6. Open URL: `udp://@239.10.10.10:5000`.
-
-   * **Method D: Using FFplay (`localaddr`)**:
-     ```powershell
-     ffplay -i "udp://239.10.10.10:5000?localaddr=192.168.1.150"
-     ```
-
----
-
-### Step 6: Testing with Ubuntu Desktop GUI Player
-
-To watch the live multicast video directly on the Ubuntu desktop:
+### Step 6: Automated Verification & Evidence Audit
 
 ```bash
-# Watch stream forwarded through DUT Router on LAN side:
-./scripts/view_stream_gui.sh lan
-
-# Or watch stream directly from Media Server on WAN side (bypasses router):
-./scripts/view_stream_gui.sh wan
-```
-* Automatically handles host multicast routing (`224.0.0.0/4`) and restores original tables upon exit.
-
----
-
-### Step 7: Automated End-to-End Smoke Scenario & Compliance Verification
-
-To run the complete automated qualification test (Join, stream validation, multi-client replication, Leave):
-
-```bash
-sudo ./scripts/scenario.sh
-```
-
-You can also run specific test phases individually:
-```bash
-sudo ./scripts/scenario.sh --phase discovery  # Validate server discovery & DHCP leases
-sudo ./scripts/scenario.sh --phase traffic    # Capture and verify multicast packet flow
-sudo ./scripts/scenario.sh --phase leave      # Verify IGMP Leave & stream termination
-sudo ./scripts/scenario.sh --phase verify     # Run post-capture verification only
-```
-
-#### Dual-Layer Compliance Verification (`verify_compliance.sh`)
-Run the automated compliance verification engine to validate wire-level PCAP packet counts, IGMPv2 signaling, join-to-data latency, DSCP/DF markings, and print an ASCII packet timeline:
-
-```bash
-# Verify the latest capture file:
+# Run automated compliance audit on the latest PCAP:
 ./scripts/verify_compliance.sh
-
-# Or verify a specific capture and group:
-./scripts/verify_compliance.sh captures/lan_20260922_120000.pcap 239.10.10.10
 ```
 
-Example compliance report:
+Example compliance report output:
 ```text
-========================================================================================
-                          PACKET TIMELINE EVIDENCE                               
-========================================================================================
-Frame  | Time (s)     | Source IP            | Destination IP       | Protocol / Info         
-----------------------------------------------------------------------------------------
-1      | 0.0000       | 192.168.1.10         | 239.10.10.10         | IGMP     V2 Membership Report
-2      | 0.0452       | 10.10.0.1            | 239.10.10.10         | UDP      Source port: 5000  ...
-...
-========================================================================================
-
 ==============================================================================
                IPTV MULTICAST LAB - DUAL-LAYER COMPLIANCE AUDIT               
 ==============================================================================
-PCAP File:       captures/lan_20260922_120000.pcap
-Multicast Group: 239.10.10.10:5000
+PCAP File:       captures/lan_20260923_080000.pcap
+Multicast Group: 239.10.10.10:5000 / [ff0e::10:10:10]:5000
 
 --- [ LAYER 1: WIRE-LEVEL PACKET INSPECTION (PCAP) ] ---
-  [PASS] [WIRE-01] PCAP File Exists & Non-Empty
-         Detail: Size: 12.4 MB (12984512 bytes)
-  [PASS] [WIRE-02] IGMPv2 Membership Reports (Join)
-         Detail: Found 4 report packet(s)
-  [PASS] [WIRE-03] MPEG-TS Multicast Video Packets
-         Detail: 9885 packet(s) received on 239.10.10.10:5000
-  [PASS] [WIRE-04] Multicast Join-to-Data Latency
-         Detail: 45.200 ms (Join: 0.000000s, First Data: 0.045200s, threshold: 500ms)
-  [PASS] [WIRE-05] IGMPv2 Leave Group Signaling
-         Detail: Found 1 leave packet(s) to 224.0.0.2
-  [INFO] [WIRE-06] IP Header DSCP / ToS Markings
-         Detail: Observed DSCP: CS5 (ToS 0xb8)
-  [INFO] [WIRE-07] IP Header Don't Fragment (DF) Flag
-         Detail: Packets with DF flag set: 9885 / 9885
+  [PASS] [WIRE-01] PCAP File Exists & Non-Empty (Size: 18.2 MB)
+  [PASS] [WIRE-02] IGMPv2 / MLDv2 Membership Reports (Join detected)
+  [PASS] [WIRE-03] MPEG-TS Multicast Video Packets (14,280 frames received)
+  [PASS] [WIRE-04] Join-to-Data Latency: 2.450 ms (Threshold: 500 ms)
+  [PASS] [WIRE-05] IGMPv2 Leave / MLDv2 Done Signaling
+  [INFO] [WIRE-06] IP Header ToS/DSCP: AF41 (0x88)
+  [INFO] [WIRE-07] IP Header Don't Fragment (DF) Flag Set: 100%
 
 --- [ LAYER 2: APPLICATION & RUNTIME STATE AUDIT ] ---
-  [PASS] [STATE-01] Streaming Process Audit
-         Detail: Media server (FFmpeg/iperf) exited cleanly after test run
-  [PASS] [STATE-02] Stale Process Check
-         Detail: No orphaned IPTV daemons or lock contention found
+  [PASS] [STATE-01] Streaming Process Audit: Clean execution
+  [PASS] [STATE-02] Stale Process Check: Zero orphaned daemons
 
 ==============================================================================
 COMPLIANCE SUMMARY: 7 passed, 0 failed (Total: 7 evaluated)
@@ -499,191 +235,131 @@ OVERALL STATUS: PASS
 ==============================================================================
 ```
 
-You can also use the legacy quick summary tool:
-```bash
-./scripts/verify_capture.sh full
-```
-
----
-
-### Step 8: Cleanup & Interface Restoration
-
-To stop all streams, daemons, namespaces, and **automatically restore all physical interfaces (`WAN_IF`, `LAN_IF`) to UP state with DHCP**:
+### Step 7: Teardown & Physical Interface Restoration
 
 ```bash
+# Teardown lab, stop all daemons, and restore physical NICs to UP + DHCP:
 sudo ./scripts/cleanup.sh
-# Explicit restore flag: sudo ./scripts/cleanup.sh --restore (or -r, --dhcp)
-```
-* Tears down test namespaces, bridges, veth pairs, and DHCP servers.
-* Automatically detaches physical interfaces from test bridges and flushes test IPs (`10.10.0.x`).
-* Brings physical links `UP`, restores NetworkManager management, and triggers DHCP to acquire IPs from whatever network they are connected to.
 
-#### Clean Logs, Captures, and Artifacts
-
-```bash
-# Purge logs/ without tearing down lab topology:
-./scripts/cleanup.sh logs
-
-# Purge captures/ without tearing down lab topology:
-./scripts/cleanup.sh captures
-# or:
-./scripts/capture.sh clean
-
-# Purge both logs/ and captures/ without tearing down lab topology:
-./scripts/cleanup.sh data
-
-# Full teardown AND purge state, logs, and captures:
-sudo ./scripts/cleanup.sh --all   # or: sudo ./scripts/cleanup.sh -a
-```
-
-If you prefer to keep interfaces isolated and administratively `DOWN`:
-```bash
-sudo ./scripts/cleanup.sh --down
+# Complete teardown AND purge runtime logs and captures:
+sudo ./scripts/cleanup.sh --all
 ```
 
 ---
 
-## DUT Router Configuration Requirements
+## Documentation & Deep-Dive Guides
 
-To ensure the router forwards multicast from WAN to LAN:
-1. **Firewall (WAN Zone)**:
-   * Allow incoming IGMP: `proto igmp accept`
-   * Allow incoming UDP Multicast: `ip daddr 224.0.0.0/4 udp dport 5000 accept`
-   * Allow forwarding from WAN to LAN for `224.0.0.0/4`.
-2. **IGMP Proxy (`/etc/igmpproxy.conf`)**:
-   ```conf
-   phyint eth1.1 upstream ratelimit 0 threshold 1
-          altnet 10.10.0.0/24
+| Guide | Description |
+| :--- | :--- |
+| **[`docs/MANUAL_TEST_GUIDE.md`](docs/MANUAL_TEST_GUIDE.md)** | **Physical Testbed Verification Guide**: 7 Standard Test Cases for router qualification (Hardware bypass, $\le 10\text{ms}$ zapping latency, snooping isolation, fast leave, querier protection, 32-ch scale, 24h stability). |
+| **[`docs/IPTV_IPV6_MULTICAST_SETUP_GUIDE.md`](docs/IPTV_IPV6_MULTICAST_SETUP_GUIDE.md)** | **IPv6 Multicast Guide**: Dedicated guide covering IPv6 multicast with FFmpeg, Linux `table local` routing rules, Windows IPv6 socket caveats, and auto-scripts. |
+| **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** | **Troubleshooting Runbook**: Hardware gotchas, MTU adaptation, packet loss diagnostics, and NetworkManager conflicts. |
+| **[`docs/TEST_PLAN.md`](docs/TEST_PLAN.md)** | **Test Plan & Matrix**: Formal requirement mapping (**R1–R22**) and pass/fail criteria. |
+| **[`docs/SHELL_STYLE.md`](docs/SHELL_STYLE.md)** | **Shell Scripting Guidelines**: Strict mode (`set -Eeuo pipefail`), non-root CLI standards, and safety traps. |
 
-   phyint br-lan downstream ratelimit 0 threshold 1
-   ```
-3. **IGMP Snooping on LAN Bridge**:
-   * Enable snooping: `echo 1 > /sys/devices/virtual/net/br-lan/bridge/mcast_snooping`
-   * Enable querier (optional): `echo 1 > /sys/devices/virtual/net/br-lan/bridge/multicast_querier`
+---
+
+## Directory & Script Structure
+
+```text
+iptv_multicast_integration_lab/
+├── config.env.example        # Configuration environment template
+├── config.env                # Local host environment configuration
+├── config/
+│   ├── kea/
+│   │   ├── kea-dhcp4.conf.in # Standard Kea DHCPv4 configuration template
+│   │   └── kea-dhcp6.conf.in # Standard Kea DHCPv6 configuration template (IA_NA + IA_PD /56 -> /60)
+│   ├── radvd/
+│   │   └── radvd.conf.in     # Standard Router Advertisement daemon template
+│   └── pimd.conf             # PIM-SM/SSM daemon configuration template
+├── captures/                 # Timestamped PCAP evidence captures (*.pcap)
+├── logs/                     # Daemon logs (server.log, kea-dhcp*.log, radvd.log, etc.)
+├── media/                    # MPEG-TS video assets (sample_1080p_8mbps.ts, channel_*.ts)
+├── state/                    # Runtime state (PID files, lease files, rendered configs)
+├── docs/                     # Specialized guides (Manual Test Guide, IPv6 Guide, Troubleshooting)
+├── tools/                    # Standalone Python 3 Multicast & IGMP tools
+│   ├── igmp_client.py        # High-performance multi-group join/leave/churn client
+│   ├── igmp_query.py         # Raw AF_PACKET IGMP query injector (General & Specific)
+│   ├── mcast_sender.py       # Sequence-tagged UDP multicast transmitter
+│   └── mcast_receiver.py     # UDP receiver with sequence & loss analysis
+└── scripts/
+    ├── lib/
+    │   ├── common.sh         # Core framework library (Kea Triad, netns, logging, safety)
+    │   └── udhcpc.script     # Namespace-safe DHCP event script
+    ├── install_deps.sh       # One-touch host dependency installer
+    ├── setup.sh              # Topology setup (--physical, --virtual, --wan-only, --dual, -s)
+    ├── cleanup.sh            # Idempotent teardown & NIC restoration
+    ├── show_state.sh         # Real-time state observer with stale PID detection
+    ├── capture.sh            # Packet capture lifecycle manager (tcpdump-based)
+    ├── start_server.sh       # Streamer manager (--direct host mode or --netns mode)
+    ├── start_client.sh       # Client manager (run | start | stop | status)
+    ├── generate_media.sh     # High-precision MPEG-TS asset generator
+    ├── diagnose.sh           # Pre-flight host & interface diagnostic tool
+    ├── scenario.sh           # Modular automated scenario runner
+    ├── verify_compliance.sh  # Dual-layer compliance verification engine
+    ├── benchmark_suite.sh    # Benchmark suite runner (quality, stability, scale, churn, stress)
+    └── windows/
+        ├── run_client.ps1    # Complete Windows automation suite (v2.1 Dual-Stack)
+        └── run_client.bat    # Interactive launcher menu for Windows
+```
+
+---
+
+## Multicast Benchmark & RFC Verification Suite
+
+Evaluate router forwarding limits, RFC 4541 snooping conformance, and RFC 4605 proxy behavior:
+
+```bash
+# Execute full automated benchmark suite:
+sudo ./scripts/benchmark_suite.sh all
+
+# Or run specific benchmarks individually:
+sudo ./scripts/benchmark_suite.sh quality     # Multi-client throughput, jitter & zero loss
+sudo ./scripts/benchmark_suite.sh stability   # Fast Leave isolation & zapping soak
+sudo ./scripts/benchmark_suite.sh scale       # 32 concurrent multicast groups capacity
+sudo ./scripts/benchmark_suite.sh churn       # Rapid Join/Leave churn (100ms cycles)
+sudo ./scripts/benchmark_suite.sh stress      # 250 qps Group-Specific Query stress flood
+sudo ./scripts/benchmark_suite.sh querier     # Foreign rogue LAN querier defense
+sudo ./scripts/benchmark_suite.sh diagnostics # Remote router state & MDB table dump
+```
 
 ---
 
 ## Wireshark / TShark Display Filters
 
 ```text
-# All IGMP Control Messages
-igmp
+# All IGMP / MLD Control Signaling:
+igmp or icmp6
 
-# IGMPv2 Membership Report (Join)
+# IGMPv2 Join (Report):
 igmp.type == 0x16
 
-# IGMPv2 Leave Group
+# IGMPv2 Leave:
 igmp.type == 0x17
 
-# Specific Group Traffic
-igmp.maddr == 239.10.10.10
+# MLDv2 Report:
+icmp6.type == 143
 
-# MPEG-TS UDP Multicast Data Packets
-ip.dst == 239.10.10.10 && udp.dstport == 5000
+# MLD Query:
+icmp6.type == 130
+
+# MPEG-TS Multicast Video Data:
+(ip.dst == 239.10.10.10 || ipv6.dst == ff0e::10:10:10 || ipv6.dst == ff15::10:10) && udp.dstport == 5000
 ```
 
 ---
 
-## Troubleshooting & FAQ
+## Top 3 Gotchas & Quick Fixes
 
-### 1. VLC on Windows connects but displays a black screen / buffers indefinitely
-* **Windows Defender Firewall**: Windows blocks inbound UDP multicast packets by default. Run this in PowerShell (Admin):
-  ```powershell
-  New-NetFirewallRule -DisplayName "IPTV Multicast Port 5000" -Direction Inbound -LocalPort 5000 -Protocol UDP -Action Allow
-  ```
-* **Wi-Fi vs Ethernet Conflict**: If both Wi-Fi and Ethernet are connected, Windows routes IGMP out Wi-Fi. Add a static multicast route:
-  ```cmd
-  route add 224.0.0.0 mask 240.0.0.0 192.168.1.150 metric 1
-  ```
-* **Confirm URL syntax**: Ensure the URL begins with `udp://@` (the `@` symbol instructs VLC to listen on the local port and join the multicast group).
-
-### 2. Router WAN does not obtain an IP address
-* Ensure `ENABLE_WAN_DHCP="1"` in `config.env`.
-* Run `./scripts/show_state.sh` or check active leases:
-  - For standalone mode: `cat state/dnsmasq-direct.leases`
-  - For namespace mode: `cat state/dnsmasq-wan.leases`
-* Check the physical cable connection between `WAN_IF` and the router's WAN port.
-
-### 3. VLC GUI on Ubuntu doesn't receive stream
-* Ubuntu directs multicast packets to its default route (usually Wi-Fi `wlp3s0`). Always use the automated launcher:
-  ```bash
-  ./scripts/view_stream_gui.sh lan
-  ```
-
-### 4. How to generate video with different bitrates or resolutions?
-* Modify `STREAM_BITRATE` or edit parameters in `scripts/generate_media.sh`:
-  ```bash
-  ./scripts/generate_media.sh
-  ```
-
-### 5. Client video is pixelated/corrupted (`Packet corrupt`, `PES packet size mismatch`, macroblocking)
-* **Root Cause: MTU Mismatch & IP Fragmentation**:
-  If the transmitting interface (e.g. `eno1`) has MTU $< 1344$ (e.g. `mtu 1280`), standard 1316-byte MPEG-TS packets ($1344\text{ bytes with IP/UDP headers}$) get fragmented into 2 IP packets. Switches or router hardware accelerators often drop fragment #2 (which lacks UDP headers), destroying packet continuity.
-* **Resolution**:
-  1. Set the transmitter interface MTU to 1500:
+1. **Linux Server Multicast goes out Wi-Fi instead of Test Interface**:
+   * *Cause*: Linux queries `table local` before `table main`. Default `ff00::/8` routes in `table local` send traffic to the default adapter.
+   * *Fix*: Always add multicast route to `table local`:
      ```bash
-     sudo ip link set dev eno1 mtu 1500
+     sudo ip -6 route replace ff15::/16 dev <TARGET_IF> table local
      ```
-     *(Alternatively, `start_server.sh` automatically adapts `pkt_size=1128` (6 TS packets) when interface MTU is $< 1344$ to prevent fragmentation).*
-  2. Increase client UDP receive socket buffer to 4MB in `ffplay`:
-     ```bash
-     ffplay "udp://239.10.10.10:5000?localaddr=192.168.1.105&buffer_size=4194304&overrun_nonfatal=1&fifo_size=500000"
-     ```
-  3. If using VLC, set **Network caching** to `1000 ms` (**Tools** $\to$ **Preferences** $\to$ **All** $\to$ **Input / Codecs**).
-
-### 6. Brief `non-existing PPS 0 referenced` / `no frame!` warnings when starting FFplay
-* **Expected Live Stream Behavior**: In live broadcast multicast, video is encoded in periodic GOP cycles (e.g. 2-second I-frames). When a client joins mid-stream, it may receive P/B frames before the first keyframe (SPS/PPS parameter sets). Once the next I-frame arrives (within 1–2s), video renders cleanly and warnings stop.
-
----
-
-## Multicast Benchmark & RFC Verification Suite
-
-This lab incorporates specialized benchmark tools and RFC compliance test harnesses to evaluate multicast routers, CPEs, and gateways (RFC 2236, RFC 3376, RFC 4541, RFC 4605).
-
-### 1. Benchmark Scripts & Tools
-
-| Script / Tool | Category | Description |
-|---|---|---|
-| [`./scripts/benchmark_suite.sh`](scripts/benchmark_suite.sh) | **Master Suite** | Master runner executing all benchmark tests and generating comprehensive report |
-| [`./scripts/test_client_quality.sh`](scripts/test_client_quality.sh) | **Multi-Client Quality** | Concurrent packet loss, throughput, and QoS across $N$ client namespaces simultaneously |
-| [`./scripts/test_client_stability.sh`](scripts/test_client_stability.sh) | **Multi-Client Stability** | RFC 4541 Fast Leave isolation and multi-client concurrent zapping churn soak |
-| [`./scripts/test_scale.sh`](scripts/test_scale.sh) | **Capacity Scale** | Joins N distinct groups (`239.100.1.1-32`); evaluates router snooping and table capacity |
-| [`./scripts/test_churn.sh`](scripts/test_churn.sh) | **Rapid Churn** | Executes rapid Join/Leave cycles (e.g. 100ms) to evaluate control-plane stability |
-| [`./scripts/test_query_stress.sh`](scripts/test_query_stress.sh) | **Query Stress** | Injects high-rate Group-Specific Queries (e.g. 250 qps) addressed to the multicast group |
-| [`./scripts/test_packet_loss.sh`](scripts/test_packet_loss.sh) | **Packet Loss** | Generates sequence-tracked packets across multiple groups; verifies loss ratio |
-| [`./scripts/test_foreign_querier.sh`](scripts/test_foreign_querier.sh) | **Querier Election** | Injects foreign LAN querier frames to evaluate querier election and port behavior |
-| [`./scripts/dut_collector.sh`](scripts/dut_collector.sh) | **Diagnostics** | SSH/UART diagnostic collector for router multicast routes, snooping tables, and kernel status |
-| [`./scripts/verify_capture.sh`](scripts/verify_capture.sh) | **Traffic Audit & Latency** | Full PCAP audit for ToS/DF, join latency (`./scripts/verify_capture.sh latency [group]`), and headers |
-
-### 2. Standalone Protocol Tools (`tools/`)
-
-All protocol test tools in `tools/` are standalone Python 3 utilities utilizing the standard library (no pip dependencies):
-* **`tools/igmp_client.py`**: High-performance IGMP client supporting range syntax (`239.100.1.1-32`), hold durations, rapid churn loops, multi-channel zapping (`--zap`), and IGMPv3 SSM (`--sources`).
-* **`tools/igmp_query.py`**: Raw `AF_PACKET` socket query injector supporting General and Group-Specific Queries, configurable rates, custom source IP/MAC, ToS byte (`--tos`), and DF bit (`--df`).
-* **`tools/mcast_sender.py`**: High-precision UDP multicast transmitter with per-group and global sequence numbers, configurable payload sizing, and pacing.
-* **`tools/mcast_receiver.py`**: Multi-group UDP receiver measuring out-of-order packets, sequence gaps, missing packet count, and exact loss ratios.
-
-### 3. Running the Benchmark Suite
-
-```bash
-# 1. Run all benchmark tests and generate a summary report
-./scripts/benchmark_suite.sh all
-
-# 2. Run specific benchmarks
-./scripts/benchmark_suite.sh quality     # Multi-client concurrent packet loss & throughput benchmark
-./scripts/benchmark_suite.sh stability   # Multi-client Fast Leave isolation & zapping soak benchmark
-./scripts/benchmark_suite.sh scale       # Multicast group capacity scale benchmark
-./scripts/benchmark_suite.sh churn       # Rapid Join/Leave churn stability benchmark
-./scripts/benchmark_suite.sh stress      # High-rate query stress benchmark
-./scripts/benchmark_suite.sh loss        # Multi-group packet loss benchmark
-./scripts/benchmark_suite.sh querier     # Foreign LAN querier benchmark
-./scripts/benchmark_suite.sh diagnostics # Collect router multicast tables & status
-./scripts/benchmark_suite.sh pcap        # Verify packet timing & headers in capture
-
-# 3. Direct Quality & Stability invocations with custom parameters:
-sudo ./scripts/test_client_quality.sh --clients all --groups 239.100.1.1-4 --rate 1200 --duration 15
-sudo ./scripts/test_client_stability.sh fast-leave --cycles 30 --churn-interval 100
-sudo ./scripts/test_client_stability.sh churn-soak --soak-duration 30 --groups 239.100.1.1-8
-```
-
-
+2. **Windows Client Receives No Multicast Packets**:
+   * *Cause*: Windows Defender Firewall blocks UDP 5000 by default, or multihomed Windows routes IGMP over Wi-Fi.
+   * *Fix*: Run [`scripts/windows/run_client.ps1`](scripts/windows/run_client.ps1) with `-Mode Setup` as Administrator.
+3. **Video Artifacts / PES Packet Size Mismatch**:
+   * *Cause*: MTU mismatch causes IP fragmentation. Routers often drop fragmented UDP packets.
+   * *Fix*: Set `pkt_size=1128` (6 TS packets) on Server if interface MTU is $< 1344$ (e.g. MTU 1280), or set interface MTU to 1500 (`sudo ip link set dev <IFACE> mtu 1500`).
