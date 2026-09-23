@@ -58,8 +58,8 @@ flowchart TD
         BR_LAN -.- WIN
     end
 
-    BR_WAN ===|"Physical WAN (enxd46e...)"| DUT_WAN
-    DUT_LAN ===|"Physical LAN (enx00e...)"| BR_LAN
+    BR_WAN -->|"Physical WAN (enxd46e...)"| DUT_WAN
+    DUT_LAN -->|"Physical LAN (enx00e...)"| BR_LAN
 ```
 
 ### Packet Flow & Protocol Sequence
@@ -67,34 +67,33 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Tester as Test Runner / CI
     participant Server as Media Server (FFmpeg)
     participant DUT as DUT Gateway (Router)
     participant Client1 as Client 1 (STB 1)
     participant Client2 as Client 2 (STB 2)
 
-    Note over Server,DUT: Phase 1: Continuous Multicast Stream (IPv4: 239.10.10.10 / IPv6: [ff0e::10:10:10])
+    Note over Server, DUT: Phase 1: Continuous Multicast Stream (IPv4: 239.10.10.10, IPv6: ff0e::10:10:10)
     Server->>DUT: UDP MPEG-TS Stream (Port 5000, 1316B, TTL 16)
     Note over DUT: DUT drops stream (no downstream LAN members yet)
 
-    Note over Client1,DUT: Phase 2: First Client Joins (STB 1)
+    Note over Client1, DUT: Phase 2: First Client Joins (STB 1)
     Client1->>DUT: IGMPv2 / MLDv2 Membership Report
-    Note over DUT: Snooping maps Client1 port; Proxy proxies Join to WAN
+    Note over DUT: Snooping maps Client1 port and Proxy forwards Join upstream
     DUT->>Server: Upstream Report (Source IP NATed to WAN IP)
     DUT->>Client1: Forwarded MPEG-TS Video Stream (Hardware Bypass)
 
-    Note over Client2,DUT: Phase 3: Second Client Joins Same Stream (STB 2)
+    Note over Client2, DUT: Phase 3: Second Client Joins Same Stream (STB 2)
     Client2->>DUT: IGMPv2 / MLDv2 Membership Report
     Note over DUT: Hardware fabric duplicates stream to Client2 port (Upstream Join suppressed)
     DUT->>Client1: Forwarded MPEG-TS Stream
     DUT->>Client2: Forwarded MPEG-TS Stream
 
-    Note over Client1,DUT: Phase 4: Client 1 Leaves (Zapping)
+    Note over Client1, DUT: Phase 4: Client 1 Leaves (Zapping)
     Client1->>DUT: IGMPv2 Leave / MLDv2 Done
-    DUT->>Client1: Stops stream to Client 1
+    DUT->>Client1: Stop stream to Client 1
     DUT->>Client2: Stream continues uninterrupted to Client 2 (Fast Leave Isolation)
 
-    Note over Client2,DUT: Phase 5: Client 2 Leaves
+    Note over Client2, DUT: Phase 5: Client 2 Leaves
     Client2->>DUT: IGMPv2 Leave / MLDv2 Done
     DUT->>Server: Upstream Leave (Forwarding terminated)
 ```
