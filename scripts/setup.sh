@@ -8,17 +8,18 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
 SETUP_ACTIVE=0
 
 rollback_setup() {
-    local exit_code="$1"
-    local line_no="$2"
+    local exit_code="${1:-1}"
+    local line_no="${2:-unknown}"
 
     if (( SETUP_ACTIVE == 1 )); then
+        SETUP_ACTIVE=0
         log_error "Setup failed at line ${line_no} (exit code: ${exit_code}). Initiating automatic cleanup..."
         "${SCRIPT_DIR}/cleanup.sh" || true
     fi
@@ -154,7 +155,8 @@ main() {
     fi
 
     SETUP_ACTIVE=1
-    trap 'rollback_setup $? ${LINENO}' ERR
+    trap 'rollback_setup "$?" "$LINENO"' ERR
+    trap 'log_warn "Setup cancelled by signal! Rolling back..."; rollback_setup 130 "SIGINT/SIGTERM"' INT TERM
 
     local proto_label="IPv${IP_VERSION}"
     if [[ "${IP_VERSION}" == "dual" ]]; then
@@ -360,7 +362,7 @@ EOF
     fi
 
     SETUP_ACTIVE=0
-    trap - ERR
+    trap - ERR INT TERM
     log_info "Setup completed successfully (virtual=${IS_VIRTUAL}, wan_only=${wan_only}, server_only=${SERVER_ONLY}, ip_version=${IP_VERSION})."
 }
 

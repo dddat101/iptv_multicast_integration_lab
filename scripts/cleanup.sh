@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
@@ -137,7 +137,10 @@ main() {
     fi
 
     # 3. Delete virtual interfaces
-    for v in $(ip -br link show 2>/dev/null | awk '{print $1}' | grep -E '^v(eth|peer)-mc' || true); do
+    local -a veth_list=()
+    mapfile -t veth_list < <(ip -br link show 2>/dev/null | awk '{print $1}' | grep -E '^v(eth|peer)-mc' || true)
+    for v in "${veth_list[@]}"; do
+        [[ -n "${v}" ]] || continue
         ip link del "${v}" 2>/dev/null || true
     done
     for v in veth-mserv vpeer-mserv veth-wan-ctl vpeer-wan-ctl v-dut-wan-h v-dut-lan-h; do
@@ -145,7 +148,10 @@ main() {
     done
 
     # 4. Delete network namespaces
-    for ns in $(ip netns list 2>/dev/null | awk '{print $1}' | grep -E '^ns-stb[0-9]+$' || true); do
+    local -a client_ns_list=()
+    mapfile -t client_ns_list < <(ip netns list 2>/dev/null | awk '{print $1}' | grep -E '^ns-stb[0-9]+$' || true)
+    for ns in "${client_ns_list[@]}"; do
+        [[ -n "${ns}" ]] || continue
         netns_del "${ns}"
     done
     for ns in "${CLIENT1_NAME}" "${CLIENT2_NAME}" "${SERVER_NAME}" "${WAN_NS}" "ns-dut"; do

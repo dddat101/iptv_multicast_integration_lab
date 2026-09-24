@@ -12,25 +12,25 @@ case "${1:-}" in
         if [[ -n "${ip:-}" ]]; then
             prefix="24"
             if [[ -n "${subnet:-}" ]]; then
-                bits=0
-                IFS=.
-                for octet in ${subnet}; do
+                local_bits=0
+                local_octets=()
+                IFS=. read -r -a local_octets <<< "${subnet}"
+                for octet in "${local_octets[@]}"; do
                     case "${octet}" in
-                        255) (( bits += 8 )) ;;
-                        254) (( bits += 7 )) ;;
-                        252) (( bits += 6 )) ;;
-                        248) (( bits += 5 )) ;;
-                        240) (( bits += 4 )) ;;
-                        224) (( bits += 3 )) ;;
-                        192) (( bits += 2 )) ;;
-                        128) (( bits += 1 )) ;;
+                        255) (( local_bits += 8 )) ;;
+                        254) (( local_bits += 7 )) ;;
+                        252) (( local_bits += 6 )) ;;
+                        248) (( local_bits += 5 )) ;;
+                        240) (( local_bits += 4 )) ;;
+                        224) (( local_bits += 3 )) ;;
+                        192) (( local_bits += 2 )) ;;
+                        128) (( local_bits += 1 )) ;;
                         0)   ;;
                         *)   ;;
                     esac
                 done
-                unset IFS
-                if (( bits > 0 && bits <= 32 )); then
-                    prefix="${bits}"
+                if (( local_bits > 0 && local_bits <= 32 )); then
+                    prefix="${local_bits}"
                 fi
             fi
 
@@ -39,10 +39,8 @@ case "${1:-}" in
         fi
 
         if [[ -n "${router:-}" ]]; then
-            for r in ${router}; do
-                ip -4 route replace default via "${r}" dev "${interface}" 2>/dev/null || true
-                break
-            done
+            router_first="${router%% *}"
+            ip -4 route replace default via "${router_first}" dev "${interface}" 2>/dev/null || true
         fi
 
         if [[ -n "${CLIENT_NETNS:-}" && -n "${STATE_DIR:-}" && -d "${STATE_DIR:-}" ]]; then

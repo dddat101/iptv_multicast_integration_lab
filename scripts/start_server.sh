@@ -12,7 +12,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 PID_FILE=""
@@ -138,9 +138,13 @@ run_foreground() {
         printf '%s\n' "${pid6}" > "${PID_FILE6}"
         log_info "IPv6 background stream active [PID ${pid6}]. Now running IPv4 foreground stream..."
         local url_v4="${MCAST_GROUP:-239.10.10.10}:${MCAST_PORT:-5000}"
+        trap 'kill -TERM "${pid6}" 2>/dev/null || true; rm -f "${PID_FILE6}"' EXIT INT TERM
         ip netns exec "${SERVER_NAME}" ffmpeg -hide_banner -re -stream_loop -1 \
             -i "${MEDIA_DIR}/${MEDIA_FILE}" -c copy -f mpegts \
             "udp://${url_v4}?pkt_size=${MPEGTS_PKT_SIZE}&ttl=${MCAST_TTL}"
+        trap - EXIT INT TERM
+        kill -TERM "${pid6}" 2>/dev/null || true
+        rm -f "${PID_FILE6}"
         return 0
     fi
 

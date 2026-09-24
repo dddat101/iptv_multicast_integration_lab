@@ -7,8 +7,8 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${LIB_DIR}/../.." && pwd)"
+LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_ROOT="$(cd -- "${LIB_DIR}/../.." && pwd -P)"
 
 # Standard ANSI loggers
 log_info()    { printf '\e[1;32m[INFO]\e[0m    %s\n' "$*"; }
@@ -232,7 +232,7 @@ start_daemon() {
     fi
     "${prefix[@]}" nohup "${cmd[@]}" > "${log_file}" 2>&1 &
     local daemon_pid=$!
-    echo "${daemon_pid}" > "${pid_file}"
+    printf '%s\n' "${daemon_pid}" > "${pid_file}"
     chmod 0666 "${pid_file}" "${log_file}" 2>/dev/null || true
     sleep 0.2
     if kill -0 "${daemon_pid}" 2>/dev/null; then
@@ -409,11 +409,13 @@ netns_del() {
         local pids
         pids="$(ip netns pids "${ns}" 2>/dev/null || true)"
         if [[ -n "${pids}" ]]; then
-            # shellcheck disable=SC2086
-            kill -TERM ${pids} 2>/dev/null || true
-            sleep 0.1
-            # shellcheck disable=SC2086
-            kill -KILL ${pids} 2>/dev/null || true
+            local -a pid_list=()
+            read -r -a pid_list <<< "${pids}"
+            if (( ${#pid_list[@]} > 0 )); then
+                kill -TERM "${pid_list[@]}" 2>/dev/null || true
+                sleep 0.1
+                kill -KILL "${pid_list[@]}" 2>/dev/null || true
+            fi
         fi
         ip netns del "${ns}" 2>/dev/null || true
     fi
